@@ -2,12 +2,16 @@ import os
 import shutil # Folder delete karne ke liye
 import zipfile # Zip handle karne ke liye
 import logging
+import html # File name ke special characters handle karne ke liye
 from telegram import Update
+from telegram.constants import ParseMode # Naye HTML features ke liye
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from config import BOT_TOKEN, DOWNLOAD_DIR, OUTPUT_DIR
 import keyboards as kb
 from watermark import add_watermark_to_pdf
 from keep_alive import keep_alive
+from pypdf import PdfReader # NAYA: Page count nikalne ke liye
+
 # Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -18,7 +22,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 **Advanced Watermark Bot**\n\n"
         "Shuru karne ke liye:\n"
         "👉 Apna **Watermark TEXT** likhein,\n"
-        "👉 YA apna **LOGO (Photo)** bhejein."
+        "👉 YA apna **LOGO (Photo)** bhejein.",
+        parse_mode=ParseMode.MARKDOWN
     )
 
 # --- 2. INPUT HANDLERS (Text/Photo/URL) ---
@@ -36,7 +41,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['location'] = "India"
         context.user_data['add_metadata'] = True
         context.user_data['step'] = 'done'
-        await update.message.reply_text("✅ Metadata Saved!\n\n📂 **Ab PDF ya ZIP file bhejein.**")
+        await update.message.reply_text("✅ Metadata Saved!\n\n📂 **Ab PDF ya ZIP file bhejein.**", parse_mode=ParseMode.MARKDOWN)
         return
 
     # CASE B: URL Handling
@@ -46,14 +51,15 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['url'] = url
         await update.message.reply_text(
             f"🔗 Link Set: {url}\n\nLink kahan lagana hai? **Upar (Top)** ya **Niche (Bottom)**?",
-            reply_markup=kb.get_position_keyboard()
+            reply_markup=kb.get_position_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
         )
         return
 
     # CASE C: Normal Watermark Text
     context.user_data['type'] = 'text'
     context.user_data['content'] = text
-    await update.message.reply_text(f"📝 Text Saved: **{text}**\n\nAb **Style** choose karein:", reply_markup=kb.get_style_keyboard())
+    await update.message.reply_text(f"📝 Text Saved: **{text}**\n\nAb **Style** choose karein:", reply_markup=kb.get_style_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
@@ -61,7 +67,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await photo_file.download_to_drive(path)
     context.user_data['type'] = 'image'
     context.user_data['content'] = path
-    await update.message.reply_text("🖼 Logo Saved. **Style** choose karein:", reply_markup=kb.get_style_keyboard())
+    await update.message.reply_text("🖼 Logo Saved. **Style** choose karein:", reply_markup=kb.get_style_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
 # --- 3. BUTTON HANDLER ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,33 +78,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith('style_'):
         context.user_data['style'] = data.split('_')[1]
         if context.user_data.get('type') == 'text':
-            await query.edit_message_text("🎨 **Color** choose karein:", reply_markup=kb.get_color_keyboard())
+            await query.edit_message_text("🎨 **Color** choose karein:", reply_markup=kb.get_color_keyboard(), parse_mode=ParseMode.MARKDOWN)
         else:
-            await query.edit_message_text("💡 **Opacity** choose karein:", reply_markup=kb.get_opacity_keyboard())
+            await query.edit_message_text("💡 **Opacity** choose karein:", reply_markup=kb.get_opacity_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
     elif data.startswith('color_'):
         context.user_data['color'] = data.split('_')[1]
-        await query.edit_message_text("💡 **Opacity** choose karein:", reply_markup=kb.get_opacity_keyboard())
+        await query.edit_message_text("💡 **Opacity** choose karein:", reply_markup=kb.get_opacity_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
     elif data.startswith('opacity_'):
         context.user_data['opacity'] = data.split('_')[1]
-        await query.edit_message_text("🔗 **Link Add karna hai?**\nURL likhein ya Skip karein.", reply_markup=kb.get_link_skip_keyboard())
+        await query.edit_message_text("🔗 **Link Add karna hai?**\nURL likhein ya Skip karein.", reply_markup=kb.get_link_skip_keyboard(), parse_mode=ParseMode.MARKDOWN)
     
     elif data == 'skip_link':
         context.user_data['url'] = None
-        await query.edit_message_text("🕵️ **Hidden Metadata add karna hai?**", reply_markup=kb.get_metadata_ask_keyboard())
+        await query.edit_message_text("🕵️ **Hidden Metadata add karna hai?**", reply_markup=kb.get_metadata_ask_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
     elif data.startswith('pos_'):
         context.user_data['position'] = data.split('_')[1]
-        await query.edit_message_text("🕵️ **Hidden Metadata add karna hai?**", reply_markup=kb.get_metadata_ask_keyboard())
+        await query.edit_message_text("🕵️ **Hidden Metadata add karna hai?**", reply_markup=kb.get_metadata_ask_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
     elif data == 'meta_yes':
         context.user_data['step'] = 'waiting_for_metadata'
-        await query.edit_message_text("📝 **Author Name, Location** likh kar bhejein.")
+        await query.edit_message_text("📝 **Author Name, Location** likh kar bhejein.", parse_mode=ParseMode.MARKDOWN)
     
     elif data == 'meta_no':
         context.user_data['add_metadata'] = False
-        await query.edit_message_text("❌ Metadata Skipped.\n\n📂 **Ab PDF ya ZIP file bhejein.**")
+        await query.edit_message_text("❌ Metadata Skipped.\n\n📂 **Ab PDF ya ZIP file bhejein.**", parse_mode=ParseMode.MARKDOWN)
 
 # --- 4. ZIP FILE PROCESSING (NEW LOGIC) ---
 async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,7 +112,7 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Pehle settings set karein (/start).")
         return
 
-    msg = await update.message.reply_text("⏳ **ZIP File Download ho rahi hai...**")
+    msg = await update.message.reply_text("⏳ **ZIP File Download ho rahi hai...**", parse_mode=ParseMode.MARKDOWN)
     user_id = update.effective_user.id
     
     # Paths Setup
@@ -120,7 +126,7 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(zip_path)
         
         # 2. Extract Zip
-        await msg.edit_text("📂 **Unzipping & Processing files...**")
+        await msg.edit_text("📂 **Unzipping & Processing files...**", parse_mode=ParseMode.MARKDOWN)
         if os.path.exists(extract_folder): shutil.rmtree(extract_folder) # Clean old junk
         os.makedirs(extract_folder, exist_ok=True)
         
@@ -139,7 +145,7 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ ZIP mein koi PDF nahi mili.")
             return
 
-        await msg.edit_text(f"⚙️ **Processing {len(pdf_files)} PDFs...**\nEk-ek karke bhej raha hoon.")
+        await msg.edit_text(f"⚙️ **Processing {len(pdf_files)} PDFs...**\nEk-ek karke bhej raha hoon.", parse_mode=ParseMode.MARKDOWN)
 
         # 4. Loop Logic
         count = 0
@@ -147,21 +153,43 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             original_filename = os.path.basename(input_pdf_path)
             output_pdf_path = os.path.join(OUTPUT_DIR, f"WM_{original_filename}")
             
+            # NAYA: Page count nikalna
+            try:
+                reader = PdfReader(input_pdf_path)
+                page_count = len(reader.pages)
+            except Exception:
+                page_count = "Unknown"
+
             # Watermark Function Call
             success = add_watermark_to_pdf(input_pdf_path, output_pdf_path, context.user_data, filename=original_filename)
             
             if success:
                 count += 1
                 with open(output_pdf_path, 'rb') as f:
-                    # Caption sirf pehli file par ya simple rakh sakte hain
-                    caption = f"✅ File {count}/{len(pdf_files)}: {original_filename}"
-                    await update.message.reply_document(f, caption=caption)
+                    safe_name = html.escape(original_filename)
+                    
+                    # Watermark type check for caption
+                    wm_type = context.user_data.get('type')
+                    if wm_type == 'text':
+                        wm_content = html.escape(context.user_data.get('content'))
+                        wm_info = f"📝 <code>{wm_content}</code>"
+                    else:
+                        wm_info = "🖼️ Image Logo"
+
+                    # ZIP ki har file ke liye VIP Caption
+                    caption = (
+                        f"✅ <b>File Processed ({count}/{len(pdf_files)})</b>\n"
+                        f"🏷️ <b>Watermark:</b> {wm_info}\n"
+                        f"📄 <b>Total Pages:</b> {page_count}\n\n"
+                        f"<blockquote>📄 <i>{safe_name}</i></blockquote>"
+                    )
+                    await update.message.reply_document(f, caption=caption, parse_mode=ParseMode.HTML)
                 
                 # Output delete karo space bachane ke liye
                 os.remove(output_pdf_path)
         
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg.message_id)
-        await update.message.reply_text("✅ **All Files Processed Successfully!**")
+        await update.message.reply_text("✅ **All Files Processed Successfully!**", parse_mode=ParseMode.MARKDOWN)
 
     except Exception as e:
         print(f"Zip Error: {e}")
@@ -197,14 +225,41 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.document.get_file()
         await file.download_to_drive(input_path)
         
+        # NAYA: Page count nikalna
+        try:
+            reader = PdfReader(input_path)
+            page_count = len(reader.pages)
+        except Exception:
+            page_count = "Unknown"
+
         success = add_watermark_to_pdf(input_path, output_path, context.user_data, filename=file_name)
 
         if success:
             await msg.edit_text("⬆️ Uploading...")
             with open(output_path, 'rb') as f:
-                caption = "✅ **Watermark Added!**"
-                if context.user_data.get('add_metadata'): caption += "\n🕵️ Metadata Added."
-                await update.message.reply_document(f, caption=caption)
+                safe_name = html.escape(file_name)
+                
+                # Watermark type check for caption
+                wm_type = context.user_data.get('type')
+                if wm_type == 'text':
+                    wm_content = html.escape(context.user_data.get('content'))
+                    wm_info = f"📝 <code>{wm_content}</code>"
+                else:
+                    wm_info = "🖼️ Image Logo"
+                
+                # SINGLE PDF ke liye Advanced Caption
+                caption = (
+                    f"✅ <b>Watermark Added Successfully!</b>\n"
+                    f"🏷️ <b>Watermark:</b> {wm_info}\n"
+                    f"📄 <b>Total Pages:</b> {page_count}\n\n"
+                    f"<blockquote>📄 <i>{safe_name}</i></blockquote>"
+                )
+                
+                if context.user_data.get('add_metadata'): 
+                    caption += "\n🕵️ <i>Hidden Metadata Injected.</i>"
+                    
+                await update.message.reply_document(f, caption=caption, parse_mode=ParseMode.HTML)
+            
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg.message_id)
         else:
             await msg.edit_text("❌ Error processing file.")
