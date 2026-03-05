@@ -1,289 +1,927 @@
+# main.py - Advanced Watermark Bot for Telegram
+# FIXED VERSION - All errors resolved, proper type handling
+
 import os
-import shutil # Folder delete karne ke liye
-import zipfile # Zip handle karne ke liye
+import shutil
+import zipfile
 import logging
-import html # File name ke special characters handle karne ke liye
-from telegram import Update
-from telegram.constants import ParseMode # Naye HTML features ke liye
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+import html
+import time
+import re
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.constants import ParseMode
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters
+)
 from config import BOT_TOKEN, DOWNLOAD_DIR, OUTPUT_DIR
 import keyboards as kb
-from watermark import add_watermark_to_pdf
-from keep_alive import keep_alive
-from pypdf import PdfReader # NAYA: Page count nikalne ke liye
+from watermark import add_watermark_to_pdf, get_pdf_page_count
+from pypdf import PdfReader
 
-# Logging setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# ============================================
+# LOGGING SETUP
+# ============================================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger("WatermarkBot")
 
-# --- 1. START COMMAND ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text(
-        "👋 **Advanced Watermark Bot**\n\n"
-        "Shuru karne ke liye:\n"
-        "👉 Apna **Watermark TEXT** likhein,\n"
-        "👉 YA apna **LOGO (Photo)** bhejein.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+# ============================================
+# USER SESSION STORAGE
+# ============================================
+user_data = {}
 
-# --- 2. INPUT HANDLERS (Text/Photo/URL) ---
-async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+def get_data(user_id: int) -> dict:
+    """Get or create user session data with defaults"""
+    if user_id not in user_data:
+        user_data[user_id] = {
+            'type': 'text',
+            'content': '',
+            'style': 'diagonal',
+            'color': 'grey',
+            'opacity': 0.3,
+            'fontsize': 48,
+            'rotation': 45,
+            'imgsize': 150,
+            'border_style': 'simple',
+            'border_color': 'grey',
+            'border_width': 2,
+            'links': [],
+            'add_metadata': False,
+            'author': '',
+            'location': '',
+            'step': None,
+            'temp_link_url': '',
+            'temp_link_pos': '',
+            'temp_link_text': ''
+        }
+    return user_data[user_id]
+
+def clear_data(user_id: int):
+    """Clear user session"""
+    user_data[user_id] = {
+        'type': 'text',
+        'content': '',
+        'style': 'diagonal',
+        'color': 'grey',
+        'opacity': 0.3,
+        'fontsize': 48,
+        'rotation': 45,
+        'imgsize': 150,
+        'border_style': 'simple',
+        'border_color': 'grey',
+        'border_width': 2,
+        'links': [],
+        'add_metadata': False,
+        'author': '',
+        'location': '',
+        'step': None,
+        'temp_link_url': '',
+        'temp_link_pos': '',
+        'temp_link_text': ''
+    }
+
+# ============================================
+# SANITIZE FILENAME
+# ============================================
+def clean_filename(name: str) -> str:
+    """Clean filename - remove invalid characters"""
+    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    name = ''.join(c for c in name if ord(c) >= 32)
+    if len(name) > 180:
+        n, e = os.path.splitext(name)
+        name = n[:180-len(e)] + e
+    return name.strip() or "document.pdf"
+
+# ============================================
+# SHOW SUMMARY TO USER
+# ============================================
+def get_summary_text(data: dict) -> str:
+    """Generate summary of what will be added to PDF"""
+    lines = ["📋 *PDF ME YE ADD HOGA:*\n"]
     
-    # CASE A: Metadata Wait
-    if context.user_data.get('step') == 'waiting_for_metadata':
-        if "," in text:
-            parts = text.split(',')
-            context.user_data['author'] = parts[0].strip()
-            context.user_data['location'] = parts[1].strip()
-        else:
-            context.user_data['author'] = text
-            context.user_data['location'] = "India"
-        context.user_data['add_metadata'] = True
-        context.user_data['step'] = 'done'
-        await update.message.reply_text("✅ Metadata Saved!\n\n📂 **Ab PDF ya ZIP file bhejein.**", parse_mode=ParseMode.MARKDOWN)
-        return
+    # Watermark type
+    if data.get('type') == 'text' and data.get('content'):
+        text = data['content'][:40]
+        lines.append(f"📝 *Text:* `{text}`")
+    elif data.get('type') == 'image':
+        lines.append("🖼️ *Logo:* Image Watermark")
+    
+    # Style
+    style = data.get('style', 'diagonal')
+    lines.append(f"🎨 *Style:* {style.upper()}")
+    
+    # Border details if border style
+    if style == 'border':
+        bs = data.get('border_style', 'simple')
+        bc = data.get('border_color', 'grey')
+        bw = data.get('border_width', 2)
+        lines.append(f"   └ Border: {bs.upper()}")
+        lines.append(f"   └ Color: {bc.upper()}")
+        lines.append(f"   └ Width: {bw}pt")
+    
+    # Color
+    color = data.get('color', 'grey')
+    lines.append(f"🌈 *Color:* {color.upper()}")
+    
+    # Opacity
+    try:
+        opacity = float(data.get('opacity', 0.3))
+        pct = opacity * 100
+        lines.append(f"💡 *Opacity:* {pct:.0f}%")
+    except:
+        lines.append(f"💡 *Opacity:* 30%")
+    
+    # Font size
+    if data.get('type') == 'text':
+        try:
+            fs = int(data.get('fontsize', 48))
+            lines.append(f"🔤 *Font:* {fs}pt")
+        except:
+            lines.append(f"🔤 *Font:* 48pt")
+    
+    # Rotation
+    try:
+        rot = int(data.get('rotation', 45))
+        lines.append(f"↩️ *Rotation:* {rot}°")
+    except:
+        lines.append(f"↩️ *Rotation:* 45°")
+    
+    # Image size
+    if data.get('type') == 'image':
+        try:
+            imgs = int(data.get('imgsize', 150))
+            lines.append(f"📐 *Logo Size:* {imgs}px")
+        except:
+            lines.append(f"📐 *Logo Size:* 150px")
+    
+    # Links
+    links = data.get('links', [])
+    if links:
+        lines.append(f"\n🔗 *LINKS ({len(links)}):*")
+        for i, link in enumerate(links, 1):
+            pos = link.get('position', 'bottomcenter').upper()
+            txt = link.get('text', 'LINK')[:20]
+            lines.append(f"   {i}. {txt} ({pos})")
+    
+    # Metadata
+    if data.get('add_metadata'):
+        lines.append(f"\n🕵️ *Metadata:* YES")
+        if data.get('author'):
+            lines.append(f"   └ Author: {data['author']}")
+    
+    return '\n'.join(lines)
 
-    # CASE B: URL Handling
-    if text.startswith('http') or 'www.' in text:
-        url = text
-        if not url.startswith('http'): url = 'https://' + url
-        context.user_data['url'] = url
+# ============================================
+# /START COMMAND
+# ============================================
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start command"""
+    user_id = update.effective_user.id
+    clear_data(user_id)
+    
+    text = (
+        "👋 *WATERMARK BOT*\n\n"
+        "PDF me watermark add karo!\n\n"
+        "✨ *Features:*\n"
+        "• 📝 Text Watermark\n"
+        "• 🖼 Logo/Image Watermark\n"
+        "• 🎨 8 Styles, 12 Colors\n"
+        "• 🔲 12 Border Styles\n"
+        "• 🔗 Multiple Links\n"
+        "• 📦 ZIP Support\n\n"
+        "🚀 *Send TEXT or IMAGE to start!*"
+    )
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ============================================
+# /HELP COMMAND
+# ============================================
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Help command"""
+    text = (
+        "📖 *HOW TO USE*\n\n"
+        "1️⃣ Send TEXT or IMAGE\n"
+        "2️⃣ Choose STYLE\n"
+        "3️⃣ Choose COLOR & OPACITY\n"
+        "4️⃣ Add LINKS (optional)\n"
+        "5️⃣ Add METADATA (optional)\n"
+        "6️⃣ Send PDF/ZIP file\n\n"
+        "📝 *Commands:*\n"
+        "/start - Begin\n"
+        "/reset - Clear settings\n"
+        "/settings - View settings"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ============================================
+# /RESET COMMAND
+# ============================================
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset settings"""
+    user_id = update.effective_user.id
+    clear_data(user_id)
+    await update.message.reply_text("🔄 *Settings cleared!*\n\nSend TEXT or IMAGE to start.", parse_mode=ParseMode.MARKDOWN)
+
+# ============================================
+# /SETTINGS COMMAND
+# ============================================
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current settings"""
+    user_id = update.effective_user.id
+    data = get_data(user_id)
+    
+    if not data.get('content'):
+        await update.message.reply_text("⚠️ No settings. Send /start", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    text = get_summary_text(data)
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+# ============================================
+# HANDLE TEXT INPUT
+# ============================================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages"""
+    text = update.message.text
+    user_id = update.effective_user.id
+    data = get_data(user_id)
+    
+    # Step: Waiting for metadata
+    if data.get('step') == 'waiting_metadata':
+        parts = text.split(',')
+        data['author'] = parts[0].strip()
+        data['location'] = parts[1].strip() if len(parts) > 1 else 'India'
+        data['add_metadata'] = True
+        data['step'] = None
+        
+        summary = get_summary_text(data)
         await update.message.reply_text(
-            f"🔗 Link Set: {url}\n\nLink kahan lagana hai? **Upar (Top)** ya **Niche (Bottom)**?",
-            reply_markup=kb.get_position_keyboard(),
+            f"✅ *Metadata Saved!*\n\n{summary}\n\n📂 *Send PDF or ZIP file now!*",
             parse_mode=ParseMode.MARKDOWN
         )
         return
+    
+    # Step: Waiting for custom rotation
+    if data.get('step') == 'waiting_rotation':
+        try:
+            angle = int(text.strip())
+            if -180 <= angle <= 180:
+                data['rotation'] = angle
+                data['step'] = None
+                await update.message.reply_text(
+                    f"✅ Rotation: {angle}°\n\n🔗 Add clickable links?",
+                    reply_markup=kb.get_link_add_skip_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await update.message.reply_text("⚠️ Enter angle between -180 and 180", parse_mode=ParseMode.MARKDOWN)
+        except:
+            await update.message.reply_text("⚠️ Enter valid number like: 45", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    # Step: Waiting for link URL
+    if data.get('step') == 'waiting_link_url':
+        url = text.strip()
+        if not url.startswith('http'):
+            url = 'https://' + url
+        
+        data['temp_link_url'] = url
+        data['step'] = None
+        
+        await update.message.reply_text(
+            f"✅ Link URL saved!\n\n📍 Choose position for this link:",
+            reply_markup=kb.get_link_position_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Step: Waiting for custom link text
+    if data.get('step') == 'waiting_link_text':
+        data['temp_link_text'] = text.strip()[:25]
+        data['step'] = None
+        
+        # Add the link
+        temp_url = data.get('temp_link_url', '')
+        temp_pos = data.get('temp_link_pos', 'bottomcenter')
+        temp_txt = data.get('temp_link_text', '🔗 CLICK HERE')
+        
+        if temp_url:
+            data['links'].append({
+                'url': temp_url,
+                'position': temp_pos,
+                'text': temp_txt
+            })
+            # Cleanup temp
+            data['temp_link_url'] = ''
+            data['temp_link_pos'] = ''
+            data['temp_link_text'] = ''
+        
+        count = len(data['links'])
+        await update.message.reply_text(
+            f"✅ Link added! ({count}/6)\n\nAdd more or continue?",
+            reply_markup=kb.get_add_more_link_keyboard(count),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Normal text = Watermark text
+    if len(text) > 100:
+        await update.message.reply_text("⚠️ Text too long! Max 100 chars.", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    data['type'] = 'text'
+    data['content'] = text.strip()
+    
+    # Auto font size based on text length
+    if len(text) < 10:
+        data['fontsize'] = 60
+    elif len(text) < 25:
+        data['fontsize'] = 48
+    elif len(text) < 50:
+        data['fontsize'] = 36
+    else:
+        data['fontsize'] = 28
+    
+    await update.message.reply_text(
+        f"✅ Text: `{text}`\n\n🎨 Choose watermark style:",
+        reply_markup=kb.get_style_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-    # CASE C: Normal Watermark Text
-    context.user_data['type'] = 'text'
-    context.user_data['content'] = text
-    await update.message.reply_text(f"📝 Text Saved: **{text}**\n\nAb **Style** choose karein:", reply_markup=kb.get_style_keyboard(), parse_mode=ParseMode.MARKDOWN)
-
+# ============================================
+# HANDLE PHOTO INPUT
+# ============================================
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo_file = await update.message.photo[-1].get_file()
-    path = os.path.join(DOWNLOAD_DIR, f"logo_{update.effective_user.id}.jpg")
-    await photo_file.download_to_drive(path)
-    context.user_data['type'] = 'image'
-    context.user_data['content'] = path
-    await update.message.reply_text("🖼 Logo Saved. **Style** choose karein:", reply_markup=kb.get_style_keyboard(), parse_mode=ParseMode.MARKDOWN)
+    """Handle photo messages"""
+    user_id = update.effective_user.id
+    data = get_data(user_id)
+    
+    try:
+        photo = await update.message.photo[-1].get_file()
+        path = os.path.join(DOWNLOAD_DIR, f"logo_{user_id}_{int(time.time())}.png")
+        await photo.download_to_drive(path)
+        
+        data['type'] = 'image'
+        data['content'] = path
+        
+        await update.message.reply_text(
+            "✅ Logo saved!\n\n🎨 Choose watermark style:",
+            reply_markup=kb.get_style_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Photo error: {e}")
+        await update.message.reply_text("❌ Failed to save image. Try again.", parse_mode=ParseMode.MARKDOWN)
 
-# --- 3. BUTTON HANDLER ---
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================
+# HANDLE BUTTON CALLBACKS
+# ============================================
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all button clicks"""
     query = update.callback_query
     await query.answer()
-    data = query.data
-
-    if data.startswith('style_'):
-        context.user_data['style'] = data.split('_')[1]
-        if context.user_data.get('type') == 'text':
-            await query.edit_message_text("🎨 **Color** choose karein:", reply_markup=kb.get_color_keyboard(), parse_mode=ParseMode.MARKDOWN)
-        else:
-            await query.edit_message_text("💡 **Opacity** choose karein:", reply_markup=kb.get_opacity_keyboard(), parse_mode=ParseMode.MARKDOWN)
-
-    elif data.startswith('color_'):
-        context.user_data['color'] = data.split('_')[1]
-        await query.edit_message_text("💡 **Opacity** choose karein:", reply_markup=kb.get_opacity_keyboard(), parse_mode=ParseMode.MARKDOWN)
-
-    elif data.startswith('opacity_'):
-        context.user_data['opacity'] = data.split('_')[1]
-        await query.edit_message_text("🔗 **Link Add karna hai?**\nURL likhein ya Skip karein.", reply_markup=kb.get_link_skip_keyboard(), parse_mode=ParseMode.MARKDOWN)
     
-    elif data == 'skip_link':
-        context.user_data['url'] = None
-        await query.edit_message_text("🕵️ **Hidden Metadata add karna hai?**", reply_markup=kb.get_metadata_ask_keyboard(), parse_mode=ParseMode.MARKDOWN)
-
-    elif data.startswith('pos_'):
-        context.user_data['position'] = data.split('_')[1]
-        await query.edit_message_text("🕵️ **Hidden Metadata add karna hai?**", reply_markup=kb.get_metadata_ask_keyboard(), parse_mode=ParseMode.MARKDOWN)
-
-    elif data == 'meta_yes':
-        context.user_data['step'] = 'waiting_for_metadata'
-        await query.edit_message_text("📝 **Author Name, Location** likh kar bhejein.", parse_mode=ParseMode.MARKDOWN)
-    
-    elif data == 'meta_no':
-        context.user_data['add_metadata'] = False
-        await query.edit_message_text("❌ Metadata Skipped.\n\n📂 **Ab PDF ya ZIP file bhejein.**", parse_mode=ParseMode.MARKDOWN)
-
-# --- 4. ZIP FILE PROCESSING (NEW LOGIC) ---
-async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'content' not in context.user_data:
-        await update.message.reply_text("⚠️ Pehle settings set karein (/start).")
-        return
-
-    msg = await update.message.reply_text("⏳ **ZIP File Download ho rahi hai...**", parse_mode=ParseMode.MARKDOWN)
     user_id = update.effective_user.id
-    
-    # Paths Setup
-    zip_filename = f"{user_id}_input.zip"
-    zip_path = os.path.join(DOWNLOAD_DIR, zip_filename)
-    extract_folder = os.path.join(DOWNLOAD_DIR, f"{user_id}_extracted")
+    data = get_data(user_id)
+    cb = query.data
     
     try:
-        # 1. Download Zip
-        file = await update.message.document.get_file()
-        await file.download_to_drive(zip_path)
-        
-        # 2. Extract Zip
-        await msg.edit_text("📂 **Unzipping & Processing files...**", parse_mode=ParseMode.MARKDOWN)
-        if os.path.exists(extract_folder): shutil.rmtree(extract_folder) # Clean old junk
-        os.makedirs(extract_folder, exist_ok=True)
-        
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_folder)
-
-        # 3. Find and Process PDFs
-        pdf_files = []
-        # Walk through all folders inside zip
-        for root, dirs, files in os.walk(extract_folder):
-            for file in files:
-                if file.lower().endswith('.pdf'):
-                    pdf_files.append(os.path.join(root, file))
-        
-        if not pdf_files:
-            await msg.edit_text("❌ ZIP mein koi PDF nahi mili.")
-            return
-
-        await msg.edit_text(f"⚙️ **Processing {len(pdf_files)} PDFs...**\nEk-ek karke bhej raha hoon.", parse_mode=ParseMode.MARKDOWN)
-
-        # 4. Loop Logic
-        count = 0
-        for input_pdf_path in pdf_files:
-            original_filename = os.path.basename(input_pdf_path)
-            output_pdf_path = os.path.join(OUTPUT_DIR, f"WM_{original_filename}")
+        # ========== STYLE SELECTION ==========
+        if cb.startswith('style_'):
+            style = cb.replace('style_', '')
+            data['style'] = style
             
-            # NAYA: Page count nikalna
-            try:
-                reader = PdfReader(input_pdf_path)
-                page_count = len(reader.pages)
-            except Exception:
-                page_count = "Unknown"
-
-            # Watermark Function Call
-            success = add_watermark_to_pdf(input_pdf_path, output_pdf_path, context.user_data, filename=original_filename)
+            if style == 'border':
+                await query.edit_message_text(
+                    "🔲 BORDER selected!\n\nChoose border style:",
+                    reply_markup=kb.get_border_style_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            elif data.get('type') == 'text':
+                await query.edit_message_text(
+                    f"✅ Style: {style.upper()}\n\n🌈 Choose color:",
+                    reply_markup=kb.get_color_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ Style: {style.upper()}\n\n📐 Choose logo size:",
+                    reply_markup=kb.get_imgsize_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        
+        # ========== BORDER STYLE ==========
+        elif cb.startswith('bstyle_'):
+            bstyle = cb.replace('bstyle_', '')
             
-            if success:
-                count += 1
-                with open(output_pdf_path, 'rb') as f:
-                    safe_name = html.escape(original_filename)
-                    
-                    # Watermark type check for caption
-                    wm_type = context.user_data.get('type')
-                    if wm_type == 'text':
-                        wm_content = html.escape(context.user_data.get('content'))
-                        wm_info = f"📝 <code>{wm_content}</code>"
-                    else:
-                        wm_info = "🖼️ Image Logo"
-
-                    # ZIP ki har file ke liye VIP Caption
-                    caption = (
-                        f"✅ <b>File Processed ({count}/{len(pdf_files)})</b>\n"
-                        f"🏷️ <b>Watermark:</b> {wm_info}\n"
-                        f"📄 <b>Total Pages:</b> {page_count}\n\n"
-                        f"<blockquote>📄 <i>{safe_name}</i></blockquote>"
+            if bstyle == 'skip':
+                if data.get('type') == 'text':
+                    await query.edit_message_text(
+                        "🌈 Choose watermark color:",
+                        reply_markup=kb.get_color_keyboard(),
+                        parse_mode=ParseMode.MARKDOWN
                     )
-                    await update.message.reply_document(f, caption=caption, parse_mode=ParseMode.HTML)
-                
-                # Output delete karo space bachane ke liye
-                os.remove(output_pdf_path)
+                else:
+                    await query.edit_message_text(
+                        "📐 Choose logo size:",
+                        reply_markup=kb.get_imgsize_keyboard(),
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            else:
+                data['border_style'] = bstyle
+                await query.edit_message_text(
+                    f"✅ Border: {bstyle.upper()}\n\n🎨 Choose border color:",
+                    reply_markup=kb.get_border_color_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
         
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg.message_id)
-        await update.message.reply_text("✅ **All Files Processed Successfully!**", parse_mode=ParseMode.MARKDOWN)
-
+        # ========== BORDER COLOR ==========
+        elif cb.startswith('bcolor_'):
+            bcolor = cb.replace('bcolor_', '')
+            data['border_color'] = bcolor
+            
+            await query.edit_message_text(
+                f"✅ Border Color: {bcolor.upper()}\n\n📏 Choose border width:",
+                reply_markup=kb.get_border_width_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== BORDER WIDTH ==========
+        elif cb.startswith('bwidth_'):
+            bwidth = cb.replace('bwidth_', '')
+            data['border_width'] = int(bwidth)  # Convert to int
+            
+            if data.get('type') == 'text':
+                await query.edit_message_text(
+                    f"✅ Border Width: {bwidth}pt\n\n🌈 Choose text color:",
+                    reply_markup=kb.get_color_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ Border Width: {bwidth}pt\n\n📐 Choose logo size:",
+                    reply_markup=kb.get_imgsize_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        
+        # ========== COLOR ==========
+        elif cb.startswith('color_'):
+            color = cb.replace('color_', '')
+            data['color'] = color
+            
+            await query.edit_message_text(
+                f"✅ Color: {color.upper()}\n\n💡 Choose opacity:",
+                reply_markup=kb.get_opacity_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== OPACITY ==========
+        elif cb.startswith('opac_'):
+            opacity = cb.replace('opac_', '')
+            data['opacity'] = float(opacity)  # Convert to float
+            
+            if data.get('type') == 'text':
+                await query.edit_message_text(
+                    f"✅ Opacity: {float(opacity)*100:.0f}%\n\n🔤 Choose font size:",
+                    reply_markup=kb.get_fontsize_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ Opacity: {float(opacity)*100:.0f}%\n\n↩️ Choose rotation:",
+                    reply_markup=kb.get_rotation_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        
+        # ========== FONT SIZE ==========
+        elif cb.startswith('fsize_'):
+            fsize = cb.replace('fsize_', '')
+            data['fontsize'] = int(fsize)  # Convert to int
+            
+            await query.edit_message_text(
+                f"✅ Font: {fsize}pt\n\n↩️ Choose rotation:",
+                reply_markup=kb.get_rotation_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== ROTATION ==========
+        elif cb.startswith('rot_'):
+            rot = cb.replace('rot_', '')
+            
+            if rot == 'custom':
+                data['step'] = 'waiting_rotation'
+                await query.edit_message_text(
+                    "🔄 Enter custom angle (-180 to 180):\n_Example: 30 or -45_",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                data['rotation'] = int(rot)  # Convert to int
+                await query.edit_message_text(
+                    f"✅ Rotation: {rot}°\n\n🔗 Add clickable links?",
+                    reply_markup=kb.get_link_add_skip_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        
+        # ========== IMAGE SIZE ==========
+        elif cb.startswith('isize_'):
+            isize = cb.replace('isize_', '')
+            data['imgsize'] = int(isize)  # Convert to int
+            
+            await query.edit_message_text(
+                f"✅ Logo Size: {isize}px\n\n💡 Choose opacity:",
+                reply_markup=kb.get_opacity_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== LINK: ADD ==========
+        elif cb == 'link_add':
+            data['step'] = 'waiting_link_url'
+            await query.edit_message_text(
+                "🔗 Enter link URL:\n_Example: https://yourwebsite.com_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== LINK: SKIP ==========
+        elif cb == 'link_skip':
+            data['links'] = []
+            await query.edit_message_text(
+                "🕵️ Add hidden metadata to PDF?\n(Author name, location etc.)",
+                reply_markup=kb.get_metadata_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== LINK: POSITION ==========
+        elif cb.startswith('lpos_'):
+            lpos = cb.replace('lpos_', '')
+            data['temp_link_pos'] = lpos
+            
+            await query.edit_message_text(
+                f"✅ Position: {lpos.upper()}\n\n📝 Choose link button text:",
+                reply_markup=kb.get_link_text_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== LINK: TEXT ==========
+        elif cb.startswith('ltext_'):
+            ltext = cb.replace('ltext_', '')
+            
+            text_styles = {
+                'click': '🔗 CLICK HERE',
+                'visit': '📱 VISIT US',
+                'open': '🌐 OPEN LINK',
+                'learn': '✨ LEARN MORE',
+                'url': None
+            }
+            
+            if ltext == 'custom':
+                data['step'] = 'waiting_link_text'
+                await query.edit_message_text(
+                    "📝 Enter custom link text (max 25 chars):",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
+                link_text = text_styles.get(ltext, '🔗 CLICK HERE')
+                
+                # Use URL as text if 'url' option
+                if link_text is None:
+                    link_text = data.get('temp_link_url', 'LINK')[:25]
+                
+                # Add link to list
+                temp_url = data.get('temp_link_url', '')
+                temp_pos = data.get('temp_link_pos', 'bottomcenter')
+                
+                if temp_url:
+                    data['links'].append({
+                        'url': temp_url,
+                        'position': temp_pos,
+                        'text': link_text
+                    })
+                    data['temp_link_url'] = ''
+                    data['temp_link_pos'] = ''
+                
+                count = len(data['links'])
+                await query.edit_message_text(
+                    f"✅ Link added! ({count}/6)\n\nAdd more or continue?",
+                    reply_markup=kb.get_add_more_link_keyboard(count),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        
+        # ========== LINK: DONE ==========
+        elif cb == 'link_done':
+            await query.edit_message_text(
+                "🕵️ Add hidden metadata to PDF?\n(Author name, location etc.)",
+                reply_markup=kb.get_metadata_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== LINK: VIEW ==========
+        elif cb == 'link_view':
+            links = data.get('links', [])
+            if not links:
+                text = "📋 No links added yet."
+            else:
+                lines = ["📋 *YOUR LINKS:*\n"]
+                for i, link in enumerate(links, 1):
+                    lines.append(f"{i}. `{link['text']}` ({link['position']})")
+                text = '\n'.join(lines)
+            
+            await query.edit_message_text(
+                text,
+                reply_markup=kb.get_link_menu_keyboard(len(links)),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== LINK: CLEAR ==========
+        elif cb == 'link_clear':
+            data['links'] = []
+            await query.edit_message_text(
+                "🗑️ All links cleared!\n\nAdd links?",
+                reply_markup=kb.get_link_add_skip_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== METADATA: YES ==========
+        elif cb == 'meta_yes':
+            data['step'] = 'waiting_metadata'
+            await query.edit_message_text(
+                "📝 Enter metadata:\n\n_Format: Author Name, Location_\n_Example: John, Mumbai_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== METADATA: NO ==========
+        elif cb == 'meta_no':
+            data['add_metadata'] = False
+            
+            summary = get_summary_text(data)
+            await query.edit_message_text(
+                f"{summary}\n\n📂 *Send PDF or ZIP file now!*",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== MENU: TEXT ==========
+        elif cb == 'menu_text':
+            await query.edit_message_text(
+                "📝 Send your watermark text:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== MENU: IMAGE ==========
+        elif cb == 'menu_image':
+            await query.edit_message_text(
+                "🖼️ Send your logo image:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== MENU: HELP ==========
+        elif cb == 'menu_help':
+            await query.edit_message_text(
+                "❓ HELP CENTER",
+                reply_markup=kb.get_help_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        # ========== BACK TO MAIN ==========
+        elif cb == 'back_main':
+            await query.edit_message_text(
+                "🏠 MAIN MENU",
+                reply_markup=kb.get_main_menu_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
     except Exception as e:
-        print(f"Zip Error: {e}")
-        await msg.edit_text("❌ Error processing ZIP file.")
-    
-    finally:
-        # Cleanup: Zip aur Extracted folder delete karo
-        if os.path.exists(zip_path): os.remove(zip_path)
-        if os.path.exists(extract_folder): shutil.rmtree(extract_folder)
+        logger.error(f"Callback error: {e}")
+        await query.edit_message_text(
+            f"❌ Error. Send /start again.",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
-# --- 5. SINGLE PDF PROCESSING ---
+# ============================================
+# HANDLE PDF/ZIP DOCUMENT
+# ============================================
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Check if ZIP
-    mime_type = update.message.document.mime_type
-    file_name = update.message.document.file_name
-    
-    # Agar Zip hai to Zip Handler ko bhejo
-    if 'zip' in mime_type or file_name.endswith('.zip'):
-        await handle_zip(update, context)
-        return
-
-    # Baaki Normal PDF Logic
-    if 'content' not in context.user_data:
-        await update.message.reply_text("⚠️ Start se shuru karein (/start).")
-        return
-
-    msg = await update.message.reply_text("⏳ Processing...")
+    """Handle PDF or ZIP file"""
     user_id = update.effective_user.id
-    input_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{file_name}")
-    output_path = os.path.join(OUTPUT_DIR, f"{file_name}")
+    data = get_data(user_id)
+    
+    # Check if settings exist
+    if not data.get('content'):
+        await update.message.reply_text(
+            "⚠️ Configure watermark first!\nSend /start to begin.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    filename = update.message.document.file_name or "document.pdf"
+    mime = update.message.document.mime_type or ""
+    
+    # Check if ZIP
+    if 'zip' in mime.lower() or filename.lower().endswith('.zip'):
+        await process_zip(update, data, filename)
+    else:
+        await process_pdf(update, data, filename)
 
+# ============================================
+# PROCESS SINGLE PDF
+# ============================================
+async def process_pdf(update: Update, data: dict, filename: str):
+    """Process single PDF file"""
+    status = await update.message.reply_text("⏳ Processing PDF...", parse_mode=ParseMode.MARKDOWN)
+    
+    user_id = update.effective_user.id
+    timestamp = int(time.time())
+    safe_name = clean_filename(filename)
+    
+    input_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{timestamp}_{safe_name}")
+    output_path = os.path.join(OUTPUT_DIR, safe_name)
+    
     try:
+        # Download
         file = await update.message.document.get_file()
         await file.download_to_drive(input_path)
         
-        # NAYA: Page count nikalna
-        try:
-            reader = PdfReader(input_path)
-            page_count = len(reader.pages)
-        except Exception:
-            page_count = "Unknown"
-
-        success = add_watermark_to_pdf(input_path, output_path, context.user_data, filename=file_name)
-
+        # Get page count
+        pages = get_pdf_page_count(input_path)
+        
+        # Process
+        await status.edit_text("🎨 Adding watermark...", parse_mode=ParseMode.MARKDOWN)
+        
+        success = add_watermark_to_pdf(input_path, output_path, data, safe_name)
+        
         if success:
-            await msg.edit_text("⬆️ Uploading...")
-            with open(output_path, 'rb') as f:
-                safe_name = html.escape(file_name)
-                
-                # Watermark type check for caption
-                wm_type = context.user_data.get('type')
-                if wm_type == 'text':
-                    wm_content = html.escape(context.user_data.get('content'))
-                    wm_info = f"📝 <code>{wm_content}</code>"
-                else:
-                    wm_info = "🖼️ Image Logo"
-                
-                # SINGLE PDF ke liye Advanced Caption
-                caption = (
-                    f"✅ <b>Watermark Added Successfully!</b>\n"
-                    f"🏷️ <b>Watermark:</b> {wm_info}\n"
-                    f"📄 <b>Total Pages:</b> {page_count}\n\n"
-                    f"<blockquote>📄 <i>{safe_name}</i></blockquote>"
-                )
-                
-                if context.user_data.get('add_metadata'): 
-                    caption += "\n🕵️ <i>Hidden Metadata Injected.</i>"
-                    
-                await update.message.reply_document(f, caption=caption, parse_mode=ParseMode.HTML)
+            await status.edit_text("⬆️ Uploading...", parse_mode=ParseMode.MARKDOWN)
             
-            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg.message_id)
+            # Send output with proper filename
+            with open(output_path, 'rb') as f:
+                # Build caption
+                caption = f"✅ <b>WATERMARK ADDED!</b>\n\n"
+                caption += f"📄 <b>File:</b> <code>{html.escape(safe_name)}</code>\n"
+                caption += f"📋 <b>Pages:</b> {pages}\n"
+                
+                if data.get('type') == 'text':
+                    txt = html.escape(data.get('content', '')[:40])
+                    caption += f"📝 <b>Text:</b> <code>{txt}</code>\n"
+                else:
+                    caption += f"🖼️ <b>Logo:</b> Image Watermark\n"
+                
+                caption += f"🎨 <b>Style:</b> {data.get('style', 'diagonal').upper()}\n"
+                
+                links = data.get('links', [])
+                if links:
+                    caption += f"🔗 <b>Links:</b> {len(links)}\n"
+                
+                if data.get('add_metadata'):
+                    caption += f"🕵️ <b>Metadata:</b> Added\n"
+                
+                # Send with proper filename
+                await update.message.reply_document(
+                    f,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    filename=safe_name
+                )
+            
+            await status.delete()
         else:
-            await msg.edit_text("❌ Error processing file.")
+            await status.edit_text("❌ Failed to process PDF", parse_mode=ParseMode.MARKDOWN)
+    
     except Exception as e:
-        print(e)
-        await msg.edit_text("❌ Failed.")
+        logger.error(f"PDF error: {e}")
+        await status.edit_text(f"❌ Error: {str(e)[:100]}", parse_mode=ParseMode.MARKDOWN)
+    
     finally:
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
+        # Cleanup
+        try:
+            if os.path.exists(input_path):
+                os.remove(input_path)
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except:
+            pass
 
+# ============================================
+# PROCESS ZIP FILE
+# ============================================
+async def process_zip(update: Update, data: dict, filename: str):
+    """Process ZIP file with multiple PDFs"""
+    status = await update.message.reply_text("⏳ Processing ZIP...", parse_mode=ParseMode.MARKDOWN)
+    
+    user_id = update.effective_user.id
+    timestamp = int(time.time())
+    
+    zip_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{timestamp}.zip")
+    extract_dir = os.path.join(DOWNLOAD_DIR, f"{user_id}_extracted_{timestamp}")
+    
+    try:
+        # Download
+        file = await update.message.document.get_file()
+        await file.download_to_drive(zip_path)
+        
+        # Extract
+        await status.edit_text("📂 Extracting...", parse_mode=ParseMode.MARKDOWN)
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            z.extractall(extract_dir)
+        
+        # Find PDFs
+        pdfs = []
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.lower().endswith('.pdf'):
+                    pdfs.append(os.path.join(root, f))
+        
+        if not pdfs:
+            await status.edit_text("❌ No PDF files in ZIP", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        await status.edit_text(f"⚙️ Processing {len(pdfs)} PDFs...", parse_mode=ParseMode.MARKDOWN)
+        
+        success_count = 0
+        
+        for i, pdf_path in enumerate(pdfs, 1):
+            orig_name = os.path.basename(pdf_path)
+            safe_name = clean_filename(orig_name)
+            output_path = os.path.join(OUTPUT_DIR, f"WM_{safe_name}")
+            
+            pages = get_pdf_page_count(pdf_path)
+            
+            if add_watermark_to_pdf(pdf_path, output_path, data, safe_name):
+                success_count += 1
+                
+                with open(output_path, 'rb') as f:
+                    caption = f"✅ <b>Processed ({i}/{len(pdfs)})</b>\n"
+                    caption += f"📄 <code>{html.escape(safe_name)}</code>\n"
+                    caption += f"📋 Pages: {pages}"
+                    
+                    await update.message.reply_document(
+                        f,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        filename=safe_name
+                    )
+                
+                os.remove(output_path)
+        
+        await status.delete()
+        
+        await update.message.reply_text(
+            f"✅ <b>ZIP Complete!</b>\n\n"
+            f"✅ Success: {success_count}\n"
+            f"📁 Total: {len(pdfs)}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    except Exception as e:
+        logger.error(f"ZIP error: {e}")
+        await status.edit_text(f"❌ Error: {str(e)[:100]}", parse_mode=ParseMode.MARKDOWN)
+    
+    finally:
+        # Cleanup
+        try:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir)
+        except:
+            pass
+
+# ============================================
+# MAIN ENTRY POINT
+# ============================================
 if __name__ == '__main__':
-    # Bot builder setup
-    app = ApplicationBuilder().token(BOT_TOKEN).connect_timeout(30).read_timeout(30).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
+    # Create directories
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # Build app
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Add handlers
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
-    print("Bot Running with ZIP Support...")
     
-    # YAHAN KEEP ALIVE SERVER START KAREIN
-    keep_alive()
+    logger.info("🚀 Bot Starting...")
     
-    # Aur uske baad bot ki polling start karein
+    # Keep alive
+    try:
+        from keep_alive import keep_alive
+        keep_alive()
+    except:
+        pass
+    
+    # Run
     app.run_polling()
