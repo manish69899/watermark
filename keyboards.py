@@ -1,12 +1,12 @@
-# keyboards.py - Advanced Watermark Bot Keyboards
-# Features: Selected buttons turn GREEN, proper navigation, all working
+# keyboards.py - Advanced Watermark Bot Keyboards (Pyrogram Version)
+# Features: Selected buttons turn GREEN, proper navigation, 2-column auto-layout
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ============================================
 # STYLE KEYBOARD - with GREEN selection
 # ============================================
-def get_style_keyboard(selected=None):
+def get_style_keyboard(selected: str = None):
     """
     Watermark style selection - selected style turns GREEN
     
@@ -37,7 +37,7 @@ def get_style_keyboard(selected=None):
 # ============================================
 # BORDER STYLE KEYBOARD - 12 Styles
 # ============================================
-def get_border_style_keyboard(selected=None):
+def get_border_style_keyboard(selected: str = None):
     """
     Border style selection - 12 different border styles
     Selected border style turns GREEN
@@ -73,7 +73,7 @@ def get_border_style_keyboard(selected=None):
 # ============================================
 # BORDER COLOR KEYBOARD
 # ============================================
-def get_border_color_keyboard(selected=None):
+def get_border_color_keyboard(selected: str = None):
     """
     Border color selection - 12 colors
     Selected color turns GREEN
@@ -95,7 +95,7 @@ def get_border_color_keyboard(selected=None):
     
     keyboard = []
     row = []
-    for i, (name, data) in enumerate(colors):
+    for name, data in colors:
         if selected and data == f'bcolor_{selected}':
             row.append(InlineKeyboardButton(f"✅ {name}", callback_data=data))
         else:
@@ -114,7 +114,7 @@ def get_border_color_keyboard(selected=None):
 # ============================================
 # BORDER WIDTH KEYBOARD
 # ============================================
-def get_border_width_keyboard(selected=None):
+def get_border_width_keyboard(selected: str = None):
     """
     Border width/thickness selection
     Selected width turns GREEN
@@ -149,7 +149,7 @@ def get_border_width_keyboard(selected=None):
 # ============================================
 # COLOR KEYBOARD - For Watermark Text
 # ============================================
-def get_color_keyboard(selected=None):
+def get_color_keyboard(selected: str = None):
     """
     Watermark text color selection - 12 colors
     Selected color turns GREEN
@@ -190,7 +190,7 @@ def get_color_keyboard(selected=None):
 # ============================================
 # OPACITY KEYBOARD
 # ============================================
-def get_opacity_keyboard(selected=None):
+def get_opacity_keyboard(selected: str = None):
     """
     Opacity selection - 8 levels
     Selected opacity turns GREEN
@@ -227,7 +227,7 @@ def get_opacity_keyboard(selected=None):
 # ============================================
 # FONT SIZE KEYBOARD
 # ============================================
-def get_fontsize_keyboard(selected=None):
+def get_fontsize_keyboard(selected: str = None):
     """
     Font size selection - 8 sizes
     Selected size turns GREEN
@@ -264,7 +264,7 @@ def get_fontsize_keyboard(selected=None):
 # ============================================
 # ROTATION KEYBOARD
 # ============================================
-def get_rotation_keyboard(selected=None):
+def get_rotation_keyboard(selected: str = None):
     """
     Rotation angle selection
     Selected angle turns GREEN
@@ -299,7 +299,7 @@ def get_rotation_keyboard(selected=None):
 # ============================================
 # IMAGE SIZE KEYBOARD (For Logo)
 # ============================================
-def get_imgsize_keyboard(selected=None):
+def get_imgsize_keyboard(selected: str = None):
     """
     Logo image size selection
     Selected size turns GREEN
@@ -334,7 +334,7 @@ def get_imgsize_keyboard(selected=None):
 # ============================================
 # LINK MENU KEYBOARD
 # ============================================
-def get_link_menu_keyboard(links_count=0):
+def get_link_menu_keyboard(links_count: int = 0):
     """
     Link management menu
     Shows how many links are added
@@ -368,7 +368,7 @@ def get_link_add_skip_keyboard():
 # ============================================
 # LINK POSITION KEYBOARD
 # ============================================
-def get_link_position_keyboard(selected=None):
+def get_link_position_keyboard(selected: str = None):
     """
     Link position selection - 6 positions
     Selected position turns GREEN
@@ -403,7 +403,7 @@ def get_link_position_keyboard(selected=None):
 # ============================================
 # LINK TEXT STYLE KEYBOARD
 # ============================================
-def get_link_text_keyboard(selected=None):
+def get_link_text_keyboard(selected: str = None):
     """
     Link button text style
     Selected style turns GREEN
@@ -438,7 +438,7 @@ def get_link_text_keyboard(selected=None):
 # ============================================
 # ADD MORE LINK KEYBOARD
 # ============================================
-def get_add_more_link_keyboard(links_count=0):
+def get_add_more_link_keyboard(links_count: int = 0):
     """Ask if user wants to add more links"""
     keyboard = []
     
@@ -453,7 +453,7 @@ def get_add_more_link_keyboard(links_count=0):
 # ============================================
 # METADATA KEYBOARD
 # ============================================
-def get_metadata_keyboard(selected=None):
+def get_metadata_keyboard(selected: str = None):
     """
     Metadata: Yes or No
     Selected option turns GREEN

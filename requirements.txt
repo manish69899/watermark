@@ -1,32 +1,12 @@
-# requirements.txt - Python Dependencies for Watermark Bot
-# Install with: pip install -r requirements.txt
 
-# ============================================
-# CORE DEPENDENCIES
-# ============================================
-python-telegram-bot==20.7
+pyrogram==2.0.106
+tgcrypto==1.2.5
 pypdf==3.17.4
 reportlab==4.0.8
 
-# ============================================
-# OPTIONAL DEPENDENCIES
-# ============================================
-# For Flask keep_alive alternative
-#flask==3.0.0
-
-# For async support
-aiohttp==3.9.1
-
-# ============================================
-# SYSTEM NOTES
-# ============================================
-#Python 3.9+ required
-# 
-# On some systems, you may also need:
-pillow
-cryptography
-
-telegram
 
 Flask==3.0.0
 python-dotenv==1.0.0
+aiohttp==3.9.1
+pillow==10.2.0
+cryptography==46.0.5

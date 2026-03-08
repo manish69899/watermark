@@ -1,5 +1,5 @@
 # keep_alive.py - Keep Bot Alive on Hosting Platforms
-# Works with Replit, Render, and similar platforms
+# Works with Replit, Render, Heroku, and similar platforms
 
 import threading
 import http.server
@@ -43,6 +43,7 @@ class KeepAliveHandler(http.server.BaseHTTPRequestHandler):
                     background: rgba(255,255,255,0.1);
                     border-radius: 20px;
                     backdrop-filter: blur(10px);
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
                 }
                 h1 { font-size: 2.5em; margin-bottom: 10px; }
                 p { font-size: 1.2em; opacity: 0.9; }
@@ -64,28 +65,30 @@ class KeepAliveHandler(http.server.BaseHTTPRequestHandler):
         <body>
             <div class="container">
                 <h1>🤖 Watermark Bot</h1>
-                <p><span class="status"></span> Bot is running successfully!</p>
+                <p><span class="status"></span> Bot is running successfully via Pyrogram!</p>
                 <p>Telegram PDF Watermark Service</p>
             </div>
         </body>
         </html>
         """
-        self.wfile.write(html_content.encode())
+        self.wfile.write(html_content.encode('utf-8'))
     
     def log_message(self, format, *args):
-        """Suppress default logging"""
+        """Suppress default logging to keep console clean"""
         pass
 
 
 def run_server(port: int = 8080):
     """Run the keep-alive HTTP server"""
     try:
+        # Prevent "Address already in use" errors by setting allow_reuse_address
+        socketserver.TCPServer.allow_reuse_address = True
         with socketserver.TCPServer(("", port), KeepAliveHandler) as httpd:
             logger.info(f"🌐 Keep-alive server running on port {port}")
             httpd.serve_forever()
     except OSError as e:
         if "Address already in use" in str(e):
-            logger.warning(f"Port {port} already in use, skipping keep_alive...")
+            logger.warning(f"Port {port} already in use, skipping keep_alive web server...")
         else:
             logger.error(f"Keep-alive server error: {e}")
     except Exception as e:
@@ -122,7 +125,7 @@ def keep_alive_flask():
             <head><title>Watermark Bot</title></head>
             <body style="background:#667eea;color:white;text-align:center;padding-top:100px;font-family:Arial">
                 <h1>🤖 Watermark Bot</h1>
-                <p>Bot is running!</p>
+                <p>Bot is running smoothly!</p>
             </body>
             </html>
             """
@@ -132,10 +135,12 @@ def keep_alive_flask():
             return {'status': 'ok'}
         
         port = int(os.environ.get("PORT", 8080))
-        app.run(host='0.0.0.0', port=port)
+        # Run Flask silently in a thread
+        threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False), daemon=True).start()
+        logger.info(f"✅ Flask keep-alive thread started on port {port}")
         
     except ImportError:
-        logger.warning("Flask not installed, using simple HTTP server...")
+        logger.warning("Flask not installed, falling back to simple HTTP server...")
         keep_alive()
 
 
@@ -145,7 +150,10 @@ def keep_alive_flask():
 if __name__ == "__main__":
     print("Starting keep-alive server...")
     keep_alive()
-    # Keep the main thread alive
+    # Keep the main thread alive for testing
     import time
-    while True:
-        time.sleep(60)
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        print("Server stopped.")

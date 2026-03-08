@@ -1,5 +1,5 @@
 # watermark.py - Advanced PDF Watermark Engine
-# FIXED VERSION - Proper None handling, all features working
+# FIXED VERSION - Proper None handling, all features working, Dynamic Page Size Fixed
 
 import io
 import os
@@ -70,6 +70,7 @@ class WatermarkEngine:
     - 8 Opacity Levels
     - Multiple Links
     - Proper Filename Handling
+    - Dynamic Page Size Handling (NEW FIX)
     """
     
     def __init__(self, settings: dict):
@@ -103,7 +104,7 @@ class WatermarkEngine:
         logger.info(f"Engine: style={self.style}, color={self.color_name}, opacity={self.opacity}, fontsize={self.fontsize}")
 
     def get_page_size(self, reader: PdfReader) -> Tuple[float, float]:
-        """Get actual page size from PDF"""
+        """Get actual page size from PDF (Fallback method now)"""
         try:
             page = reader.pages[0]
             width = float(page.mediabox.width)
@@ -521,20 +522,27 @@ class WatermarkEngine:
             if total_pages == 0:
                 return False, "PDF has no pages"
             
-            # Get page size
-            page_width, page_height = self.get_page_size(reader)
             logger.info(f"Processing: {filename}, Pages: {total_pages}")
-            
-            # Create watermark layer
-            watermark_packet = self.create_watermark_layer(page_width, page_height)
-            watermark_pdf = PdfReader(watermark_packet)
-            watermark_page = watermark_pdf.pages[0]
             
             # Create output
             writer = PdfWriter()
             
-            # Merge watermark on each page
+            # 🔴 NEW FIX: Merge watermark on each page DYNAMICALLY based on that specific page's size!
             for page in reader.pages:
+                try:
+                    # Get exact width/height of the CURRENT page (Fixes portrait/landscape mixing bugs)
+                    page_width = float(page.mediabox.width)
+                    page_height = float(page.mediabox.height)
+                except:
+                    # Fallback just in case
+                    page_width, page_height = 612.0, 792.0
+                
+                # Create a specific watermark layer for THIS page's dimensions
+                watermark_packet = self.create_watermark_layer(page_width, page_height)
+                watermark_pdf = PdfReader(watermark_packet)
+                watermark_page = watermark_pdf.pages[0]
+                
+                # Merge and add to writer
                 page.merge_page(watermark_page)
                 writer.add_page(page)
             

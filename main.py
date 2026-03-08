@@ -1,5 +1,5 @@
-# main.py - Advanced Watermark Bot for Telegram
-# FIXED VERSION - All errors resolved, proper type handling
+# main.py - Advanced Watermark Bot for Telegram (PYROGRAM VERSION)
+# FIXED VERSION - 100% MTProto Bypass for strict file names
 
 import os
 import shutil
@@ -8,17 +8,14 @@ import logging
 import html
 import time
 import re
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.constants import ParseMode
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters
-)
-from config import BOT_TOKEN, DOWNLOAD_DIR, OUTPUT_DIR
+
+# 🔴 PYROGRAM IMPORTS (Replaced python-telegram-bot)
+from pyrogram import Client, filters
+from pyrogram.types import Message, CallbackQuery
+from pyrogram.enums import ParseMode
+
+# API_ID aur API_HASH import kiye gaye hain config se
+from config import BOT_TOKEN, API_ID, API_HASH, DOWNLOAD_DIR, OUTPUT_DIR
 import keyboards as kb
 from watermark import add_watermark_to_pdf, get_pdf_page_count
 from pypdf import PdfReader
@@ -31,6 +28,16 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger("WatermarkBot")
+
+# ============================================
+# PYROGRAM APP INITIALIZATION
+# ============================================
+app = Client(
+    "WatermarkBotSession",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
 # ============================================
 # USER SESSION STORAGE
@@ -181,9 +188,10 @@ def get_summary_text(data: dict) -> str:
 # ============================================
 # /START COMMAND
 # ============================================
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("start"))
+async def cmd_start(client: Client, message: Message):
     """Start command"""
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     clear_data(user_id)
     
     text = (
@@ -199,12 +207,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 *Send TEXT or IMAGE to start!*"
     )
     
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 # ============================================
 # /HELP COMMAND
 # ============================================
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("help"))
+async def cmd_help(client: Client, message: Message):
     """Help command"""
     text = (
         "📖 *HOW TO USE*\n\n"
@@ -219,39 +228,42 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/reset - Clear settings\n"
         "/settings - View settings"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 # ============================================
 # /RESET COMMAND
 # ============================================
-async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("reset"))
+async def cmd_reset(client: Client, message: Message):
     """Reset settings"""
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     clear_data(user_id)
-    await update.message.reply_text("🔄 *Settings cleared!*\n\nSend TEXT or IMAGE to start.", parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text("🔄 *Settings cleared!*\n\nSend TEXT or IMAGE to start.", parse_mode=ParseMode.MARKDOWN)
 
 # ============================================
 # /SETTINGS COMMAND
 # ============================================
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("settings"))
+async def cmd_settings(client: Client, message: Message):
     """Show current settings"""
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     data = get_data(user_id)
     
     if not data.get('content'):
-        await update.message.reply_text("⚠️ No settings. Send /start", parse_mode=ParseMode.MARKDOWN)
+        await message.reply_text("⚠️ No settings. Send /start", parse_mode=ParseMode.MARKDOWN)
         return
     
     text = get_summary_text(data)
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 # ============================================
 # HANDLE TEXT INPUT
 # ============================================
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.text & ~filters.command(["start", "help", "reset", "settings"]))
+async def handle_text(client: Client, message: Message):
     """Handle text messages"""
-    text = update.message.text
-    user_id = update.effective_user.id
+    text = message.text
+    user_id = message.from_user.id
     data = get_data(user_id)
     
     # Step: Waiting for metadata
@@ -263,7 +275,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data['step'] = None
         
         summary = get_summary_text(data)
-        await update.message.reply_text(
+        await message.reply_text(
             f"✅ *Metadata Saved!*\n\n{summary}\n\n📂 *Send PDF or ZIP file now!*",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -276,15 +288,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if -180 <= angle <= 180:
                 data['rotation'] = angle
                 data['step'] = None
-                await update.message.reply_text(
+                await message.reply_text(
                     f"✅ Rotation: {angle}°\n\n🔗 Add clickable links?",
                     reply_markup=kb.get_link_add_skip_keyboard(),
                     parse_mode=ParseMode.MARKDOWN
                 )
             else:
-                await update.message.reply_text("⚠️ Enter angle between -180 and 180", parse_mode=ParseMode.MARKDOWN)
+                await message.reply_text("⚠️ Enter angle between -180 and 180", parse_mode=ParseMode.MARKDOWN)
         except:
-            await update.message.reply_text("⚠️ Enter valid number like: 45", parse_mode=ParseMode.MARKDOWN)
+            await message.reply_text("⚠️ Enter valid number like: 45", parse_mode=ParseMode.MARKDOWN)
         return
     
     # Step: Waiting for link URL
@@ -296,7 +308,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data['temp_link_url'] = url
         data['step'] = None
         
-        await update.message.reply_text(
+        await message.reply_text(
             f"✅ Link URL saved!\n\n📍 Choose position for this link:",
             reply_markup=kb.get_link_position_keyboard(),
             parse_mode=ParseMode.MARKDOWN
@@ -325,7 +337,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data['temp_link_text'] = ''
         
         count = len(data['links'])
-        await update.message.reply_text(
+        await message.reply_text(
             f"✅ Link added! ({count}/6)\n\nAdd more or continue?",
             reply_markup=kb.get_add_more_link_keyboard(count),
             parse_mode=ParseMode.MARKDOWN
@@ -334,7 +346,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Normal text = Watermark text
     if len(text) > 100:
-        await update.message.reply_text("⚠️ Text too long! Max 100 chars.", parse_mode=ParseMode.MARKDOWN)
+        await message.reply_text("⚠️ Text too long! Max 100 chars.", parse_mode=ParseMode.MARKDOWN)
         return
     
     data['type'] = 'text'
@@ -350,7 +362,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         data['fontsize'] = 28
     
-    await update.message.reply_text(
+    await message.reply_text(
         f"✅ Text: `{text}`\n\n🎨 Choose watermark style:",
         reply_markup=kb.get_style_keyboard(),
         parse_mode=ParseMode.MARKDOWN
@@ -359,37 +371,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 # HANDLE PHOTO INPUT
 # ============================================
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.photo)
+async def handle_photo(client: Client, message: Message):
     """Handle photo messages"""
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     data = get_data(user_id)
     
     try:
-        photo = await update.message.photo[-1].get_file()
         path = os.path.join(DOWNLOAD_DIR, f"logo_{user_id}_{int(time.time())}.png")
-        await photo.download_to_drive(path)
+        # Pyrogram native download
+        await message.download(file_name=path)
         
         data['type'] = 'image'
         data['content'] = path
         
-        await update.message.reply_text(
+        await message.reply_text(
             "✅ Logo saved!\n\n🎨 Choose watermark style:",
             reply_markup=kb.get_style_keyboard(),
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
         logger.error(f"Photo error: {e}")
-        await update.message.reply_text("❌ Failed to save image. Try again.", parse_mode=ParseMode.MARKDOWN)
+        await message.reply_text("❌ Failed to save image. Try again.", parse_mode=ParseMode.MARKDOWN)
 
 # ============================================
 # HANDLE BUTTON CALLBACKS
 # ============================================
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_callback_query()
+async def handle_callback(client: Client, query: CallbackQuery):
     """Handle all button clicks"""
-    query = update.callback_query
     await query.answer()
     
-    user_id = update.effective_user.id
+    user_id = query.from_user.id
     data = get_data(user_id)
     cb = query.data
     
@@ -402,20 +415,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if style == 'border':
                 await query.edit_message_text(
                     "🔲 BORDER selected!\n\nChoose border style:",
-                    reply_markup=kb.get_border_style_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_border_style_keyboard()
                 )
             elif data.get('type') == 'text':
                 await query.edit_message_text(
                     f"✅ Style: {style.upper()}\n\n🌈 Choose color:",
-                    reply_markup=kb.get_color_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_color_keyboard()
                 )
             else:
                 await query.edit_message_text(
                     f"✅ Style: {style.upper()}\n\n📐 Choose logo size:",
-                    reply_markup=kb.get_imgsize_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_imgsize_keyboard()
                 )
         
         # ========== BORDER STYLE ==========
@@ -426,21 +436,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if data.get('type') == 'text':
                     await query.edit_message_text(
                         "🌈 Choose watermark color:",
-                        reply_markup=kb.get_color_keyboard(),
-                        parse_mode=ParseMode.MARKDOWN
+                        reply_markup=kb.get_color_keyboard()
                     )
                 else:
                     await query.edit_message_text(
                         "📐 Choose logo size:",
-                        reply_markup=kb.get_imgsize_keyboard(),
-                        parse_mode=ParseMode.MARKDOWN
+                        reply_markup=kb.get_imgsize_keyboard()
                     )
             else:
                 data['border_style'] = bstyle
                 await query.edit_message_text(
                     f"✅ Border: {bstyle.upper()}\n\n🎨 Choose border color:",
-                    reply_markup=kb.get_border_color_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_border_color_keyboard()
                 )
         
         # ========== BORDER COLOR ==========
@@ -450,8 +457,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 f"✅ Border Color: {bcolor.upper()}\n\n📏 Choose border width:",
-                reply_markup=kb.get_border_width_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_border_width_keyboard()
             )
         
         # ========== BORDER WIDTH ==========
@@ -462,14 +468,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if data.get('type') == 'text':
                 await query.edit_message_text(
                     f"✅ Border Width: {bwidth}pt\n\n🌈 Choose text color:",
-                    reply_markup=kb.get_color_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_color_keyboard()
                 )
             else:
                 await query.edit_message_text(
                     f"✅ Border Width: {bwidth}pt\n\n📐 Choose logo size:",
-                    reply_markup=kb.get_imgsize_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_imgsize_keyboard()
                 )
         
         # ========== COLOR ==========
@@ -479,8 +483,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 f"✅ Color: {color.upper()}\n\n💡 Choose opacity:",
-                reply_markup=kb.get_opacity_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_opacity_keyboard()
             )
         
         # ========== OPACITY ==========
@@ -491,14 +494,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if data.get('type') == 'text':
                 await query.edit_message_text(
                     f"✅ Opacity: {float(opacity)*100:.0f}%\n\n🔤 Choose font size:",
-                    reply_markup=kb.get_fontsize_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_fontsize_keyboard()
                 )
             else:
                 await query.edit_message_text(
                     f"✅ Opacity: {float(opacity)*100:.0f}%\n\n↩️ Choose rotation:",
-                    reply_markup=kb.get_rotation_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_rotation_keyboard()
                 )
         
         # ========== FONT SIZE ==========
@@ -508,8 +509,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 f"✅ Font: {fsize}pt\n\n↩️ Choose rotation:",
-                reply_markup=kb.get_rotation_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_rotation_keyboard()
             )
         
         # ========== ROTATION ==========
@@ -526,8 +526,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data['rotation'] = int(rot)  # Convert to int
                 await query.edit_message_text(
                     f"✅ Rotation: {rot}°\n\n🔗 Add clickable links?",
-                    reply_markup=kb.get_link_add_skip_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_link_add_skip_keyboard()
                 )
         
         # ========== IMAGE SIZE ==========
@@ -537,8 +536,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 f"✅ Logo Size: {isize}px\n\n💡 Choose opacity:",
-                reply_markup=kb.get_opacity_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_opacity_keyboard()
             )
         
         # ========== LINK: ADD ==========
@@ -554,8 +552,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data['links'] = []
             await query.edit_message_text(
                 "🕵️ Add hidden metadata to PDF?\n(Author name, location etc.)",
-                reply_markup=kb.get_metadata_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_metadata_keyboard()
             )
         
         # ========== LINK: POSITION ==========
@@ -565,8 +562,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 f"✅ Position: {lpos.upper()}\n\n📝 Choose link button text:",
-                reply_markup=kb.get_link_text_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_link_text_keyboard()
             )
         
         # ========== LINK: TEXT ==========
@@ -610,16 +606,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 count = len(data['links'])
                 await query.edit_message_text(
                     f"✅ Link added! ({count}/6)\n\nAdd more or continue?",
-                    reply_markup=kb.get_add_more_link_keyboard(count),
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=kb.get_add_more_link_keyboard(count)
                 )
         
         # ========== LINK: DONE ==========
         elif cb == 'link_done':
             await query.edit_message_text(
                 "🕵️ Add hidden metadata to PDF?\n(Author name, location etc.)",
-                reply_markup=kb.get_metadata_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_metadata_keyboard()
             )
         
         # ========== LINK: VIEW ==========
@@ -644,8 +638,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data['links'] = []
             await query.edit_message_text(
                 "🗑️ All links cleared!\n\nAdd links?",
-                reply_markup=kb.get_link_add_skip_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_link_add_skip_keyboard()
             )
         
         # ========== METADATA: YES ==========
@@ -668,84 +661,76 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ========== MENU: TEXT ==========
         elif cb == 'menu_text':
-            await query.edit_message_text(
-                "📝 Send your watermark text:",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await query.edit_message_text("📝 Send your watermark text:")
         
         # ========== MENU: IMAGE ==========
         elif cb == 'menu_image':
-            await query.edit_message_text(
-                "🖼️ Send your logo image:",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await query.edit_message_text("🖼️ Send your logo image:")
         
         # ========== MENU: HELP ==========
         elif cb == 'menu_help':
             await query.edit_message_text(
                 "❓ HELP CENTER",
-                reply_markup=kb.get_help_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_help_keyboard()
             )
         
         # ========== BACK TO MAIN ==========
         elif cb == 'back_main':
             await query.edit_message_text(
                 "🏠 MAIN MENU",
-                reply_markup=kb.get_main_menu_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=kb.get_main_menu_keyboard()
             )
         
     except Exception as e:
         logger.error(f"Callback error: {e}")
-        await query.edit_message_text(
-            f"❌ Error. Send /start again.",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await query.edit_message_text("❌ Error. Send /start again.")
 
 # ============================================
 # HANDLE PDF/ZIP DOCUMENT
 # ============================================
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.document)
+async def handle_document(client: Client, message: Message):
     """Handle PDF or ZIP file"""
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     data = get_data(user_id)
     
     # Check if settings exist
     if not data.get('content'):
-        await update.message.reply_text(
+        await message.reply_text(
             "⚠️ Configure watermark first!\nSend /start to begin.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
     
-    filename = update.message.document.file_name or "document.pdf"
-    mime = update.message.document.mime_type or ""
+    filename = message.document.file_name or "document.pdf"
+    mime = message.document.mime_type or ""
     
     # Check if ZIP
     if 'zip' in mime.lower() or filename.lower().endswith('.zip'):
-        await process_zip(update, data, filename)
+        await process_zip(client, message, data, filename)
     else:
-        await process_pdf(update, data, filename)
+        await process_pdf(client, message, data, filename)
 
 # ============================================
-# PROCESS SINGLE PDF
+# PROCESS SINGLE PDF (WITH PYROGRAM STRICT RENAME)
 # ============================================
-async def process_pdf(update: Update, data: dict, filename: str):
-    """Process single PDF file"""
-    status = await update.message.reply_text("⏳ Processing PDF...", parse_mode=ParseMode.MARKDOWN)
+async def process_pdf(client: Client, message: Message, data: dict, original_filename: str):
+    """Process single PDF with strict Pyrogram force renaming"""
+    status = await message.reply_text("⏳ Processing PDF...", parse_mode=ParseMode.MARKDOWN)
     
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     timestamp = int(time.time())
-    safe_name = clean_filename(filename)
     
-    input_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{timestamp}_{safe_name}")
-    output_path = os.path.join(OUTPUT_DIR, safe_name)
+    # Task Directory Setup
+    task_dir = os.path.join(DOWNLOAD_DIR, f"task_{user_id}_{timestamp}")
+    os.makedirs(task_dir, exist_ok=True)
+    
+    input_path = os.path.join(task_dir, "input_temp.pdf")
+    output_path = os.path.join(task_dir, f"output_{timestamp}.pdf")
     
     try:
-        # Download
-        file = await update.message.document.get_file()
-        await file.download_to_drive(input_path)
+        # Download file (Pyrogram native)
+        await message.download(file_name=input_path)
         
         # Get page count
         pages = get_pdf_page_count(input_path)
@@ -753,40 +738,34 @@ async def process_pdf(update: Update, data: dict, filename: str):
         # Process
         await status.edit_text("🎨 Adding watermark...", parse_mode=ParseMode.MARKDOWN)
         
-        success = add_watermark_to_pdf(input_path, output_path, data, safe_name)
+        # Engine output path par file banayega
+        success = add_watermark_to_pdf(input_path, output_path, data, original_filename)
         
         if success:
             await status.edit_text("⬆️ Uploading...", parse_mode=ParseMode.MARKDOWN)
             
-            # Send output with proper filename
-            with open(output_path, 'rb') as f:
-                # Build caption
-                caption = f"✅ <b>WATERMARK ADDED!</b>\n\n"
-                caption += f"📄 <b>File:</b> <code>{html.escape(safe_name)}</code>\n"
-                caption += f"📋 <b>Pages:</b> {pages}\n"
-                
-                if data.get('type') == 'text':
-                    txt = html.escape(data.get('content', '')[:40])
-                    caption += f"📝 <b>Text:</b> <code>{txt}</code>\n"
-                else:
-                    caption += f"🖼️ <b>Logo:</b> Image Watermark\n"
-                
-                caption += f"🎨 <b>Style:</b> {data.get('style', 'diagonal').upper()}\n"
-                
-                links = data.get('links', [])
-                if links:
-                    caption += f"🔗 <b>Links:</b> {len(links)}\n"
-                
-                if data.get('add_metadata'):
-                    caption += f"🕵️ <b>Metadata:</b> Added\n"
-                
-                # Send with proper filename
-                await update.message.reply_document(
-                    f,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    filename=safe_name
-                )
+            caption = f"✅ <b>WATERMARK ADDED!</b>\n\n"
+            caption += f"📄 <b>File:</b> <code>{html.escape(original_filename)}</code>\n"
+            caption += f"📋 <b>Pages:</b> {pages}\n"
+            
+            if data.get('type') == 'text':
+                txt = html.escape(data.get('content', '')[:40])
+                caption += f"📝 <b>Text:</b> <code>{txt}</code>\n"
+            else:
+                caption += f"🖼️ <b>Logo:</b> Image Watermark\n"
+            
+            caption += f"🎨 <b>Style:</b> {data.get('style', 'diagonal').upper()}\n"
+            
+            if data.get('add_metadata'):
+                caption += f"🕵️ <b>Metadata:</b> Added\n"
+            
+            # 🔴 PERMANENT FIX: Pyrogram me file_name argument se seedha exact original naam pass ho jayega
+            await message.reply_document(
+                document=output_path,
+                file_name=original_filename,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
             
             await status.delete()
         else:
@@ -794,39 +773,39 @@ async def process_pdf(update: Update, data: dict, filename: str):
     
     except Exception as e:
         logger.error(f"PDF error: {e}")
-        await status.edit_text(f"❌ Error: {str(e)[:100]}", parse_mode=ParseMode.MARKDOWN)
+        await status.edit_text(f"❌ Error processing PDF. Please try again.", parse_mode=ParseMode.MARKDOWN)
     
     finally:
-        # Cleanup
+        # COMPLETE CLEANUP
         try:
-            if os.path.exists(input_path):
-                os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
-        except:
-            pass
-
+            if os.path.exists(task_dir):
+                shutil.rmtree(task_dir)
+        except Exception as cleanup_error:
+            logger.error(f"Cleanup error: {cleanup_error}")
+            
 # ============================================
-# PROCESS ZIP FILE
+# PROCESS ZIP FILE (WITH PYROGRAM STRICT RENAME)
 # ============================================
-async def process_zip(update: Update, data: dict, filename: str):
+async def process_zip(client: Client, message: Message, data: dict, filename: str):
     """Process ZIP file with multiple PDFs"""
-    status = await update.message.reply_text("⏳ Processing ZIP...", parse_mode=ParseMode.MARKDOWN)
+    status = await message.reply_text("⏳ Processing ZIP...", parse_mode=ParseMode.MARKDOWN)
     
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     timestamp = int(time.time())
     
-    zip_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{timestamp}.zip")
-    extract_dir = os.path.join(DOWNLOAD_DIR, f"{user_id}_extracted_{timestamp}")
+    task_dir = os.path.join(DOWNLOAD_DIR, f"zip_task_{user_id}_{timestamp}")
+    extract_dir = os.path.join(task_dir, "extracted")
+    os.makedirs(task_dir, exist_ok=True)
+    os.makedirs(extract_dir, exist_ok=True)
+    
+    zip_path = os.path.join(task_dir, "input.zip")
     
     try:
-        # Download
-        file = await update.message.document.get_file()
-        await file.download_to_drive(zip_path)
+        # Download (Pyrogram Native)
+        await message.download(file_name=zip_path)
         
         # Extract
         await status.edit_text("📂 Extracting...", parse_mode=ParseMode.MARKDOWN)
-        os.makedirs(extract_dir, exist_ok=True)
         
         with zipfile.ZipFile(zip_path, 'r') as z:
             z.extractall(extract_dir)
@@ -848,31 +827,30 @@ async def process_zip(update: Update, data: dict, filename: str):
         
         for i, pdf_path in enumerate(pdfs, 1):
             orig_name = os.path.basename(pdf_path)
-            safe_name = clean_filename(orig_name)
-            output_path = os.path.join(OUTPUT_DIR, f"WM_{safe_name}")
+            output_path = os.path.join(task_dir, f"out_{i}_{timestamp}.pdf")
             
             pages = get_pdf_page_count(pdf_path)
             
-            if add_watermark_to_pdf(pdf_path, output_path, data, safe_name):
+            if add_watermark_to_pdf(pdf_path, output_path, data, orig_name):
                 success_count += 1
                 
-                with open(output_path, 'rb') as f:
-                    caption = f"✅ <b>Processed ({i}/{len(pdfs)})</b>\n"
-                    caption += f"📄 <code>{html.escape(safe_name)}</code>\n"
-                    caption += f"📋 Pages: {pages}"
-                    
-                    await update.message.reply_document(
-                        f,
-                        caption=caption,
-                        parse_mode=ParseMode.HTML,
-                        filename=safe_name
-                    )
+                caption = f"✅ <b>Processed ({i}/{len(pdfs)})</b>\n"
+                caption += f"📄 <code>{html.escape(orig_name)}</code>\n"
+                caption += f"📋 Pages: {pages}"
+                
+                # 🔴 Pyrogram force exact file name for ZIP files
+                await message.reply_document(
+                    document=output_path,
+                    file_name=orig_name,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                )
                 
                 os.remove(output_path)
         
         await status.delete()
         
-        await update.message.reply_text(
+        await message.reply_text(
             f"✅ <b>ZIP Complete!</b>\n\n"
             f"✅ Success: {success_count}\n"
             f"📁 Total: {len(pdfs)}",
@@ -886,12 +864,10 @@ async def process_zip(update: Update, data: dict, filename: str):
     finally:
         # Cleanup
         try:
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-            if os.path.exists(extract_dir):
-                shutil.rmtree(extract_dir)
-        except:
-            pass
+            if os.path.exists(task_dir):
+                shutil.rmtree(task_dir)
+        except Exception as cleanup_error:
+            logger.error(f"Cleanup error: {cleanup_error}")
 
 # ============================================
 # MAIN ENTRY POINT
@@ -901,20 +877,7 @@ if __name__ == '__main__':
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # Build app
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    # Add handlers
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("reset", cmd_reset))
-    app.add_handler(CommandHandler("settings", cmd_settings))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
-    logger.info("🚀 Bot Starting...")
+    logger.info("🚀 Pyrogram Bot Starting...")
     
     # Keep alive
     try:
@@ -923,5 +886,5 @@ if __name__ == '__main__':
     except:
         pass
     
-    # Run
-    app.run_polling()
+    # Run Pyrogram
+    app.run()
