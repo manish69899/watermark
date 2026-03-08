@@ -27,6 +27,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+# 🔴 YEH LINE ADD KARO - Isse Pyrogram ke faltu connect/disconnect logs hide ho jayenge
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+
 logger = logging.getLogger("WatermarkBot")
 
 # ============================================
