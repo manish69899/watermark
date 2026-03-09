@@ -21,17 +21,41 @@ from watermark import add_watermark_to_pdf, get_pdf_page_count
 from pypdf import PdfReader
 
 # ============================================
-# LOGGING SETUP
+# SMART LOGGING SETUP
 # ============================================
+import logging
+
+# Basic configuration
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# 🔴 YEH LINE ADD KARO - Isse Pyrogram ke faltu connect/disconnect logs hide ho jayenge
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
-
+# 1. Hamare Bot ke saare logs aane do (INFO, WARNING, ERROR sab)
 logger = logging.getLogger("WatermarkBot")
+logger.setLevel(logging.INFO)
+
+# 2. Pyrogram ka spam kam karne ke liye custom filter
+class FilterPyrogramSpam(logging.Filter):
+    def filter(self, record):
+        # In specific messages ko hide karo (Ping, Connect/Disconnect spam)
+        ignore_list = [
+            "PingTask", "NetworkTask", "Session started", "Session stopped",
+            "Session initialized", "Device:", "System:", "Disconnected"
+        ]
+        # Agar log message inme se kuch bhi hai, toh use ignore karo (False return karo)
+        for text in ignore_list:
+            if text in record.getMessage():
+                return False
+        # Baaki saare Pyrogram logs aane do (Connecting..., Connected!, Errors)
+        return True
+
+pyrogram_logger = logging.getLogger("pyrogram")
+pyrogram_logger.setLevel(logging.INFO) # Info par rakho taaki 'Connected' dikhe
+pyrogram_logger.addFilter(FilterPyrogramSpam()) # Par filter laga do taaki spam na aaye
+
+# 3. Engine ke logs bhi properly aane do
+logging.getLogger("WatermarkEngine").setLevel(logging.INFO)
 
 # ============================================
 # PYROGRAM APP INITIALIZATION
