@@ -56,10 +56,10 @@ API_HASH = os.environ.get("API_HASH", "")
 # PERFORMANCE & CONCURRENCY SYSTEM (QUEUE)
 # ============================================
 # Kitni files ek sath process karni hai (aapne 3 kaha tha)
-MAX_CONCURRENT_TASKS = 10
+MAX_CONCURRENT_TASKS = 1
 
 # Agar bot restart ho toh pending list delay dikhane ke liye update interval
-QUEUE_UPDATE_INTERVAL = 1 # seconds
+QUEUE_UPDATE_INTERVAL = 3 # seconds
 
 # File size limits
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
