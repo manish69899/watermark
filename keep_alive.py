@@ -1,211 +1,262 @@
-# keep_alive.py - Advanced Bot Alive System
-# 100% Compatible with Render, Replit, Heroku, and UptimeRobot
+# keep_alive.py - Keep the bot alive on hosting platforms
+# IMPROVED: Better status page, uptime counter, statistics
 
 import threading
-import http.server
-import socketserver
-import logging
 import os
+import time
+import psutil
+from flask import Flask, jsonify
 
-logger = logging.getLogger("KeepAlive")
+# Track bot start time
+BOT_START_TIME = time.time()
 
-# ============================================
-# MODERN PREMIUM UI (HTML/CSS)
-# ============================================
-# Modern Glassmorphism dark theme dashboard for health checks
-HTML_CONTENT = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Watermark Bot | System Status</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root { 
-            --bg: #0f172a; 
-            --card: rgba(30, 41, 59, 0.7); 
-            --text: #f8fafc; 
-            --accent: #3b82f6; 
-            --success: #22c55e; 
-        }
-        body { 
-            margin: 0; 
-            font-family: 'Inter', sans-serif; 
-            background: var(--bg); 
-            color: var(--text); 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            min-height: 100vh; 
-            overflow: hidden; 
-        }
-        /* Glowing Orbs in background */
-        .orb { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.4; z-index: -1; }
-        .orb-1 { top: -10%; left: -10%; width: 400px; height: 400px; background: var(--accent); }
-        .orb-2 { bottom: -10%; right: -10%; width: 300px; height: 300px; background: var(--success); }
-        
-        /* Modern Glass Card */
-        .glass-card { 
-            background: var(--card); 
-            backdrop-filter: blur(16px); 
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255,255,255,0.05); 
-            padding: 40px; 
-            border-radius: 24px; 
-            text-align: center; 
-            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); 
-            width: 90%; 
-            max-width: 400px; 
-        }
-        .logo { font-size: 56px; margin-bottom: 10px; animation: float 3s ease-in-out infinite; }
-        h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px 0; letter-spacing: -0.5px; }
-        p { color: #94a3b8; font-size: 15px; margin: 0 0 24px 0; }
-        
-        /* Glowing Status Badge */
-        .status-badge { 
-            display: inline-flex; 
-            align-items: center; 
-            gap: 10px; 
-            background: rgba(34, 197, 94, 0.1); 
-            color: var(--success); 
-            padding: 10px 20px; 
-            border-radius: 99px; 
-            font-weight: 600; 
-            font-size: 15px; 
-            border: 1px solid rgba(34, 197, 94, 0.2); 
-            box-shadow: 0 0 20px rgba(34, 197, 94, 0.1);
-        }
-        .pulse { 
-            width: 12px; 
-            height: 12px; 
-            background: var(--success); 
-            border-radius: 50%; 
-            box-shadow: 0 0 0 0 rgba(34,197,94, 0.7); 
-            animation: pulse 2s infinite; 
-        }
-        .footer { margin-top: 30px; font-size: 13px; color: #64748b; font-weight: 400; }
-        
-        /* Animations */
-        @keyframes pulse { 
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); } 
-            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); } 
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } 
-        }
-        @keyframes float { 
-            0% { transform: translateY(0px); } 
-            50% { transform: translateY(-10px); } 
-            100% { transform: translateY(0px); } 
-        }
-    </style>
-</head>
-<body>
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="glass-card">
-        <div class="logo">🤖</div>
-        <h1>Watermark Engine</h1>
-        <p>Enterprise PDF Processing System</p>
-        <div class="status-badge">
-            <div class="pulse"></div>
-            System Online & Active
-        </div>
-        <div class="footer">
-            Routing Network: Render.com<br>
-            Awaiting UptimeRobot Ping...
-        </div>
-    </div>
-</body>
-</html>
-"""
+app = Flask(__name__)
 
-# ============================================
-# SIMPLE HTTP SERVER (FALLBACK)
-# ============================================
-class KeepAliveHandler(http.server.BaseHTTPRequestHandler):
-    """Simple HTTP handler for health checks"""
-    
-    def do_GET(self):
-        """Handle GET requests"""
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(HTML_CONTENT.encode('utf-8'))
-    
-    def log_message(self, format, *args):
-        """Suppress default logging to keep console clean"""
-        pass
+def get_uptime():
+    """Get bot uptime in human readable format"""
+    uptime_seconds = int(time.time() - BOT_START_TIME)
+    hours = uptime_seconds // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    seconds = uptime_seconds % 60
+    return f"{hours}h {minutes}m {seconds}s"
 
-def run_server(port: int):
-    """Run the basic keep-alive HTTP server"""
+def get_memory_usage():
+    """Get current memory usage in MB"""
     try:
-        socketserver.TCPServer.allow_reuse_address = True
-        # 🔴 ASLI FIX: "0.0.0.0" is strictly required by Render for external port scanning
-        with socketserver.TCPServer(("0.0.0.0", port), KeepAliveHandler) as httpd:
-            logger.info(f"🌐 Primary HTTP Server active on 0.0.0.0:{port}")
-            httpd.serve_forever()
-    except Exception as e:
-        logger.error(f"HTTP server error: {e}")
+        process = psutil.Process(os.getpid())
+        return round(process.memory_info().rss / 1024 / 1024, 1)
+    except:
+        return 0
 
+def get_cpu_usage():
+    """Get CPU usage percentage"""
+    try:
+        return psutil.cpu_percent(interval=0.1)
+    except:
+        return 0
 
-# ============================================
-# FLASK SERVER (PRIMARY - RECOMMENDED FOR RENDER)
-# ============================================
-def keep_alive_flask(port: int):
-    """Advanced Flask-based keep-alive (Better routing and stability)"""
-    from flask import Flask
+@app.route('/')
+def home():
+    uptime = get_uptime()
+    memory = get_memory_usage()
+    cpu = get_cpu_usage()
     
-    # Hide Flask spam logs
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)
-    
-    app = Flask(__name__)
-    
-    @app.route('/')
-    def home():
-        return HTML_CONTENT
-    
-    @app.route('/health')
-    def health():
-        return {'status': 'System is perfectly healthy', 'code': 200}
-    
-    # 🔴 ASLI FIX: host='0.0.0.0' guarantees Render will find the port
-    logger.info(f"🌐 Advanced Flask Server active on 0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    return f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Watermark Bot Status</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+                color: white;
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px;
+            }}
+            .container {{
+                text-align: center;
+                padding: 40px;
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 24px;
+                backdrop-filter: blur(20px);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                max-width: 600px;
+                width: 100%;
+            }}
+            .logo {{
+                font-size: 4em;
+                margin-bottom: 10px;
+            }}
+            h1 {{
+                font-size: 2.2em;
+                margin-bottom: 8px;
+                background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }}
+            .subtitle {{
+                font-size: 1.1em;
+                opacity: 0.8;
+                margin-bottom: 25px;
+            }}
+            .stats-grid {{
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+                margin: 25px 0;
+            }}
+            .stat-card {{
+                background: rgba(255, 255, 255, 0.08);
+                padding: 20px;
+                border-radius: 16px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            .stat-icon {{
+                font-size: 2em;
+                margin-bottom: 8px;
+            }}
+            .stat-value {{
+                font-size: 1.5em;
+                font-weight: bold;
+                margin-bottom: 5px;
+            }}
+            .stat-label {{
+                font-size: 0.9em;
+                opacity: 0.7;
+            }}
+            .status {{
+                display: inline-block;
+                padding: 12px 35px;
+                background: linear-gradient(90deg, #00b09b 0%, #96c93d 100%);
+                border-radius: 30px;
+                margin-top: 20px;
+                font-weight: bold;
+                font-size: 1.1em;
+                box-shadow: 0 4px 15px rgba(0, 176, 155, 0.4);
+            }}
+            .features {{
+                margin-top: 25px;
+                padding: 20px;
+                background: rgba(255, 255, 255, 0.03);
+                border-radius: 16px;
+            }}
+            .features h3 {{
+                margin-bottom: 15px;
+                opacity: 0.9;
+            }}
+            .feature-list {{
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 10px;
+            }}
+            .feature-tag {{
+                background: rgba(102, 126, 234, 0.2);
+                padding: 8px 15px;
+                border-radius: 20px;
+                font-size: 0.85em;
+                border: 1px solid rgba(102, 126, 234, 0.3);
+            }}
+            .footer {{
+                margin-top: 25px;
+                opacity: 0.6;
+                font-size: 0.85em;
+            }}
+            .pulse {{
+                animation: pulse 2s infinite;
+            }}
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.7; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="logo">🤖</div>
+            <h1>Watermark Bot</h1>
+            <p class="subtitle">Advanced PDF Watermark Bot for Telegram</p>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">⏱️</div>
+                    <div class="stat-value">{uptime}</div>
+                    <div class="stat-label">Uptime</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">💾</div>
+                    <div class="stat-value">{memory} MB</div>
+                    <div class="stat-label">Memory Usage</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">🖥️</div>
+                    <div class="stat-value">{cpu}%</div>
+                    <div class="stat-label">CPU Usage</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">📊</div>
+                    <div class="stat-value">v2.0</div>
+                    <div class="stat-label">Bot Version</div>
+                </div>
+            </div>
+            
+            <div class="status pulse">✅ ONLINE & RUNNING</div>
+            
+            <div class="features">
+                <h3>✨ Features</h3>
+                <div class="feature-list">
+                    <span class="feature-tag">📝 Text Watermark</span>
+                    <span class="feature-tag">🖼️ Image Watermark</span>
+                    <span class="feature-tag">🔤 Custom Fonts</span>
+                    <span class="feature-tag">🎨 8 Styles</span>
+                    <span class="feature-tag">🔲 20 Borders</span>
+                    <span class="feature-tag">🌈 18 Colors</span>
+                    <span class="feature-tag">📏 Gap Control</span>
+                    <span class="feature-tag">📍 Position</span>
+                    <span class="feature-tag">✨ 3D Shadow</span>
+                    <span class="feature-tag">🎭 Double Layer</span>
+                </div>
+            </div>
+            
+            <div class="footer">
+                Made with ❤️ by Aryan & localhost | @hilocalhost
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
 
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'bot': 'running',
+        'uptime': get_uptime(),
+        'memory_mb': get_memory_usage(),
+        'cpu_percent': get_cpu_usage(),
+        'version': '2.0'
+    })
 
-# ============================================
-# MASTER LAUNCHER
-# ============================================
-def keep_alive():
-    """Smart launcher: Tries Flask first, falls back to Basic HTTP"""
-    # Render assigns dynamic ports via $PORT. Defaults to 8080 locally.
+@app.route('/api/stats')
+def stats():
+    """Detailed stats endpoint"""
+    return jsonify({
+        'uptime_seconds': int(time.time() - BOT_START_TIME),
+        'memory': {
+            'used_mb': get_memory_usage(),
+            'percent': round(get_memory_usage() / 512 * 100, 1)  # Assuming 512MB limit
+        },
+        'cpu': {
+            'percent': get_cpu_usage()
+        },
+        'timestamp': int(time.time())
+    })
+
+def run():
     port = int(os.environ.get("PORT", 8080))
-    
-    try:
-        # Flask is much more stable on Render, let's try it first
-        import flask
-        server_thread = threading.Thread(target=keep_alive_flask, args=(port,), daemon=True)
-    except ImportError:
-        # If Flask isn't installed, fallback to the built-in HTTP server
-        logger.warning("Flask not found. Falling back to Basic HTTP Server...")
-        server_thread = threading.Thread(target=run_server, args=(port,), daemon=True)
-        
-    server_thread.start()
-    logger.info("✅ Keep-alive background worker successfully injected")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
 
+def keep_alive():
+    """Start the keep-alive server in a background thread"""
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    print(f"✅ Keep-alive server started on port {os.environ.get('PORT', 8080)}")
 
-# ============================================
-# TESTING
-# ============================================
-if __name__ == "__main__":
-    print("Starting Web Server...")
+if __name__ == '__main__':
     keep_alive()
-    
-    # Keep the main thread alive if run directly
-    import time
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        print("Server shutdown complete.")
+    while True:
+        time.sleep(1)
