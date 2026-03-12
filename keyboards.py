@@ -1,7 +1,6 @@
 # keyboards.py - PROFESSIONAL Inline Keyboards for Watermark Bot
 # IMPROVED: All Features + NEW: Gap Control, Position, Tile Patterns, Fixed Typos
 # Features: Green Selection, 8 Styles, 20 Borders, 18 Colors, Quick Presets, Gap/Spacing
-# NEW: Underlay Mode Keyboard
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import Optional, List
@@ -18,7 +17,6 @@ def get_quick_presets_keyboard():
         [InlineKeyboardButton("🔲 Border Frame (Grey)", callback_data='preset_border_grey')],
         [InlineKeyboardButton("📝 Header Style (Black)", callback_data='preset_header_black')],
         [InlineKeyboardButton("✨ Double Layer Pro", callback_data='preset_double_layer')],
-        [InlineKeyboardButton("🔻 Underlay Pro (Behind Content)", callback_data='preset_underlay_pro')],
         [InlineKeyboardButton("🎨 Custom Settings", callback_data='preset_custom')]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -204,9 +202,11 @@ def get_border_color_keyboard(selected: Optional[str] = None):
         ('💎 Cyan', 'bcolor_cyan'),
         ('🩷 Pink', 'bcolor_pink'),
         ('🟤 Brown', 'bcolor_brown'),
+        # FIXED: 'navy Navy' typo corrected
         ('⚓ Navy', 'bcolor_navy'),
         ('🩵 Teal', 'bcolor_teal'),
         ('❤️ Maroon', 'bcolor_maroon'),
+        # NEW colors
         ('💜 Indigo', 'bcolor_indigo'),
         ('🔶 Coral', 'bcolor_coral'),
         ('🌿 Olive', 'bcolor_olive')
@@ -280,9 +280,11 @@ def get_color_keyboard(selected: Optional[str] = None):
         ('💎 Cyan', 'color_cyan'),
         ('🩷 Pink', 'color_pink'),
         ('🟤 Brown', 'color_brown'),
+        # FIXED: 'navy Navy' typo corrected
         ('⚓ Navy', 'color_navy'),
         ('🩵 Teal', 'color_teal'),
         ('❤️ Maroon', 'color_maroon'),
+        # NEW colors
         ('💜 Indigo', 'color_indigo'),
         ('🔶 Coral', 'color_coral'),
         ('🌿 Olive', 'color_olive')
@@ -566,41 +568,6 @@ def get_gradient_keyboard(selected: Optional[str] = None):
 
 
 # ============================================
-# NEW: UNDERLAY MODE KEYBOARD
-# ============================================
-def get_underlay_keyboard(selected: Optional[str] = None):
-    """
-    Underlay Mode Selection - NEW FEATURE
-    
-    UNDERLAY = Watermark BEHIND content (professional look)
-    OVERLAY = Watermark ON TOP of content (default)
-    
-    Perfect for:
-    - Professional documents
-    - Readable text with watermark
-    - Subtle branding
-    """
-    keyboard = []
-    
-    # OVERLAY = On top of content (default)
-    if selected == 'no' or selected is False:
-        overlay_text = "✅ OVERLAY (On Top) - Default"
-    else:
-        overlay_text = "🔼 OVERLAY (On Top)"
-    
-    # UNDERLAY = Behind content
-    if selected == 'yes' or selected is True:
-        underlay_text = "✅ UNDERLAY (Behind Content) - Professional"
-    else:
-        underlay_text = "🔻 UNDERLAY (Behind Content) - Professional"
-    
-    keyboard.append([InlineKeyboardButton(overlay_text, callback_data='underlay_no')])
-    keyboard.append([InlineKeyboardButton(underlay_text, callback_data='underlay_yes')])
-    
-    return InlineKeyboardMarkup(keyboard)
-
-
-# ============================================
 # PAGE RANGE KEYBOARD (PREMIUM FEATURE)
 # ============================================
 def get_page_range_keyboard(selected: Optional[str] = None):
@@ -768,10 +735,10 @@ def get_preview_keyboard():
 
 
 # ============================================
-# SETTINGS KEYBOARD - UPDATED WITH UNDERLAY
+# SETTINGS KEYBOARD - UPDATED
 # ============================================
 def get_settings_keyboard():
-    """Settings menu to change options - WITH UNDERLAY MODE"""
+    """Settings menu to change options"""
     keyboard = [
         [InlineKeyboardButton("🎨 Change Style", callback_data='set_style')],
         [InlineKeyboardButton("🌈 Change Color", callback_data='set_color')],
@@ -782,11 +749,12 @@ def get_settings_keyboard():
         [InlineKeyboardButton("✨ Toggle Shadow", callback_data='set_shadow')],
         [InlineKeyboardButton("🎭 Double Layer", callback_data='set_double')],
         [InlineKeyboardButton("🌈 Gradient Effect", callback_data='set_gradient')],
+        # NEW: Gap control
         [InlineKeyboardButton("📏 Gap/Spacing", callback_data='set_gap')],
+        # NEW: Position
         [InlineKeyboardButton("📍 Position", callback_data='set_position')],
+        # NEW: Outline
         [InlineKeyboardButton("✏️ Text Outline", callback_data='set_outline')],
-        # NEW: Underlay Mode button
-        [InlineKeyboardButton("🔻 Layer Mode (Underlay)", callback_data='set_underlay')],
         [InlineKeyboardButton("📄 Change Page Range", callback_data='set_prange')],
         [InlineKeyboardButton("🔗 Manage Links", callback_data='set_links')],
         [InlineKeyboardButton("↩️ Back", callback_data='back_main')]
@@ -828,6 +796,7 @@ def get_effects_menu_keyboard():
         [InlineKeyboardButton("✨ 3D Shadow Effect", callback_data='effect_shadow')],
         [InlineKeyboardButton("🎭 Double Layer Watermark", callback_data='effect_double')],
         [InlineKeyboardButton("🌈 Gradient Effect", callback_data='effect_gradient')],
+        # NEW: Outline effect
         [InlineKeyboardButton("✏️ Text Outline/Stroke", callback_data='effect_outline')],
         [InlineKeyboardButton("➡️ Skip All Effects", callback_data='effect_skip')]
     ]

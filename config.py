@@ -66,7 +66,7 @@ MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
 MAX_DOWNLOAD_SIZE = 20000000 * 1024 * 1024  # 20MB for free tier
 
 # Session settings
-SESSION_TIMEOUT = 7200  # 2 hours
+SESSION_TIMEOUT = 3600  # 2 hours
 USE_MEMORY_SESSION = True
 
 # Retry settings

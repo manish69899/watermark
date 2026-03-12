@@ -2,7 +2,6 @@
 # FIXED: Dynamic Per-Page Dimension Detection + Smart Caching for Mixed Page Sizes/Orientations
 # IMPROVED: File Size Fix, Better Rendering, Gap Control, Position, Tile Patterns
 # ALL FEATURES PRESERVED + NEW: Outline, Advanced Borders, Compression Fix
-# NEW FEATURES: Underlay Mode, Dynamic Variables, Multi-line Text Support
 
 import io
 import os
@@ -11,7 +10,6 @@ import math
 import hashlib
 import copy
 import gc
-from datetime import datetime
 from typing import Dict, Tuple, List, Optional, Set
 from functools import lru_cache
 from pypdf import PdfReader, PdfWriter
@@ -56,7 +54,7 @@ COLORS = {
 }
 
 # ============================================
-# GAP SETTINGS
+# GAP SETTINGS - NEW FEATURE
 # ============================================
 GAP_SIZES = {
     'small': 120,
@@ -67,10 +65,11 @@ GAP_SIZES = {
 # ============================================
 # SMART WATERMARK CACHE - PER-DIMENSION CACHING
 # ============================================
-_dimension_cache: Dict[Tuple[int, int], bytes] = {}
-_settings_cache_key: str = ""
+# Cache stores watermark PDF bytes keyed by (width, height) dimensions
+# This allows reusing watermarks for pages with same dimensions
+_dimension_cache: Dict[Tuple[int, int], bytes] = {}  # Key: (width, height) -> watermark bytes
+_settings_cache_key: str = ""  # Current settings hash
 MAX_CACHE_SIZE = 50
-
 
 def _get_settings_cache_key(settings: dict) -> str:
     """Generate unique cache key based on watermark settings (not dimensions)"""
@@ -92,15 +91,17 @@ def _get_settings_cache_key(settings: dict) -> str:
         f"{settings.get('tile_pattern')}_"
         f"{settings.get('border_color')}_"
         f"{settings.get('double_layer_color')}_"
-        f"{settings.get('outline_width')}_"
-        f"{settings.get('underlay')}"  # NEW: Include underlay in cache key
+        f"{settings.get('outline_width')}"
     )
     return hashlib.md5(key_data.encode()).hexdigest()
 
 
 def _get_dimension_key(width: float, height: float) -> Tuple[int, int]:
-    """Normalize dimensions to integer tuple for caching"""
-    return (int(round(width)), int(round(height)))
+    """Normalize dimensions to integer tuple for caching (handles floating point variations)"""
+    # Round to nearest integer and normalize orientation
+    w = int(round(width))
+    h = int(round(height))
+    return (w, h)
 
 
 def clear_cache():
@@ -109,10 +110,11 @@ def clear_cache():
     _dimension_cache.clear()
     _settings_cache_key = ""
     gc.collect()
-    logger.info("🗑️ All caches cleared")
+    logger.info("🗑️ All watermark caches cleared")
 
 
 def safe_int(value, default=0) -> int:
+    """Safely convert to int"""
     if value is None:
         return default
     try:
@@ -122,6 +124,7 @@ def safe_int(value, default=0) -> int:
 
 
 def safe_float(value, default=0.0) -> float:
+    """Safely convert to float"""
     if value is None:
         return default
     try:
@@ -132,36 +135,34 @@ def safe_float(value, default=0.0) -> float:
 
 class WatermarkEngine:
     """
-    PROFESSIONAL PDF Watermark Engine
+    PROFESSIONAL PDF Watermark Engine - ALL FEATURES + ENHANCED
     
     FEATURES:
     - 8 Watermark Styles
-    - 20 Border Styles
+    - 20 Border Styles (Expanded)
     - 18 Colors
     - 8 Opacity Levels
-    - Gap/Spacing Control
-    - Position Presets
-    - Tile Patterns
-    - Text Outline Effect
+    - Gap/Spacing Control (NEW)
+    - Position Presets (NEW)
+    - Tile Patterns (NEW)
+    - Text Outline Effect (NEW)
     - Multiple Links
     - Custom Font Support
     - 3D Shadow Effect
     - Double Layer Watermark
     - Gradient Effect
     - Page Range Selection
-    - Content Stream Compression
+    - Content Stream Compression (File Size Fix)
     
-    *** NEW FEATURES ***
-    - UNDERLAY MODE: Watermark behind content (professional)
-    - DYNAMIC VARIABLES: {page}, {total}, {date}, {filename}, {time}
-    - MULTI-LINE TEXT: Support for \\n in watermarks
+    *** FIXED: Dynamic Per-Page Dimension Detection ***
+    *** FIXED: Smart Caching for Mixed Page PDFs ***
     """
     
     def __init__(self, settings: dict):
-        """Initialize with user settings"""
+        """Initialize with user settings - SAFE conversion"""
         self.settings = settings if settings else {}
         
-        # Basic settings
+        # Basic settings - SAFE conversions
         self.content_type = self.settings.get('type') or 'text'
         self.content = self.settings.get('content') or ''
         self.style = self.settings.get('style') or 'diagonal'
@@ -184,20 +185,20 @@ class WatermarkEngine:
         )
         self.page_range = self.settings.get('page_range') or 'all'
         
-        # Gap/Spacing Control
+        # NEW: Gap/Spacing Control
         self.gap_setting = self.settings.get('gap', 'medium')
         if isinstance(self.gap_setting, (int, float)):
             self.gap = safe_int(self.gap_setting, 200)
         else:
             self.gap = GAP_SIZES.get(self.gap_setting, 200)
         
-        # Position
+        # NEW: Position
         self.position = self.settings.get('position', 'center')
         
-        # Tile Pattern
+        # NEW: Tile Pattern
         self.tile_pattern = self.settings.get('tile_pattern', 'grid')
         
-        # Text Outline
+        # NEW: Text Outline
         self.outline = self.settings.get('outline', False)
         self.outline_width = safe_int(self.settings.get('outline_width'), 2)
         
@@ -208,17 +209,6 @@ class WatermarkEngine:
         
         # Gradient Effect
         self.gradient_effect = self.settings.get('gradient_effect', False)
-        
-        # ============================================
-        # NEW FEATURE: UNDERLAY MODE
-        # ============================================
-        # underlay=True = watermark BEHIND content (professional look)
-        # underlay=False = watermark ON TOP of content (default)
-        self.underlay = (
-            self.settings.get('underlay') == True or
-            self.settings.get('underlay') == 'yes' or
-            self.settings.get('layer_order') == 'under'
-        )
         
         # Custom Font Handling
         self.font_path = self.settings.get('font_path', '')
@@ -250,145 +240,31 @@ class WatermarkEngine:
         
         logger.info(
             f"Engine Init: style={self.style}, color={self.color_name}, "
-            f"opacity={self.opacity}, shadow={self.shadow}, underlay={self.underlay}"
+            f"opacity={self.opacity}, shadow={self.shadow}, gap={self.gap}, "
+            f"position={self.position}, outline={self.outline}"
         )
 
-    # ============================================
-    # NEW FEATURE: DYNAMIC VARIABLES REPLACEMENT
-    # ============================================
-    def _replace_variables(self, text: str, page_num: int = 1, total_pages: int = 1, 
-                          filename: str = "document.pdf") -> str:
-        """
-        Replace dynamic variables in text with actual values.
+    def create_watermark_layer(self, width: float, height: float) -> io.BytesIO:
+        """Create watermark layer - WITH SMART PER-DIMENSION CACHING"""
         
-        Supported Variables:
-        - {page} or {p}      : Current page number (1-indexed)
-        - {total} or {t}     : Total number of pages
-        - {date} or {d}      : Current date (DD-MM-YYYY)
-        - {time}             : Current time (HH:MM)
-        - {datetime}         : Date and time (DD-MM-YYYY HH:MM)
-        - {filename} or {f}  : PDF filename without extension
-        - {year} or {y}      : Current year (YYYY)
-        - {month} or {m}     : Current month (MM)
-        - {day}              : Current day (DD)
-        """
-        if not text or '{' not in text:
-            return text
-        
-        from datetime import datetime
-        now = datetime.now()
-        
-        # Get filename without extension
-        clean_filename = os.path.splitext(os.path.basename(filename))[0]
-        
-        # Replace all variables
-        replacements = {
-            # Page numbers
-            '{page}': str(page_num),
-            '{p}': str(page_num),
-            '{total}': str(total_pages),
-            '{t}': str(total_pages),
-            
-            # Date/Time
-            '{date}': now.strftime('%d-%m-%Y'),
-            '{d}': now.strftime('%d-%m-%Y'),
-            '{time}': now.strftime('%H:%M'),
-            '{datetime}': now.strftime('%d-%m-%Y %H:%M'),
-            '{year}': now.strftime('%Y'),
-            '{y}': now.strftime('%Y'),
-            '{month}': now.strftime('%m'),
-            '{m}': now.strftime('%m'),
-            '{day}': now.strftime('%d'),
-            
-            # Filename
-            '{filename}': clean_filename,
-            '{f}': clean_filename,
-        }
-        
-        result = text
-        for var, value in replacements.items():
-            result = result.replace(var, value)
-        
-        return result
-
-    # ============================================
-    # NEW FEATURE: MULTI-LINE TEXT HANDLING
-    # ============================================
-    def _split_multiline(self, text: str) -> List[str]:
-        """
-        Split text into multiple lines.
-        
-        Supports:
-        - \\n (literal backslash-n)
-        - Actual newline characters
-        """
-        if not text:
-            return []
-        
-        # Handle both \n literal and actual newlines
-        text = text.replace('\\n', '\n')
-        lines = text.split('\n')
-        
-        return [line for line in lines if line.strip()]
-
-    def _draw_multiline_text(self, can: canvas.Canvas, x: float, y: float, 
-                             text: str, draw_func: str = "drawCentredString",
-                             page_num: int = 1, total_pages: int = 1,
-                             filename: str = "document.pdf") -> float:
-        """
-        Draw multi-line text with proper vertical spacing.
-        
-        Returns: Total height of all lines drawn
-        """
-        lines = self._split_multiline(text)
-        if not lines:
-            return 0
-        
-        # Replace variables in each line
-        lines = [self._replace_variables(line, page_num, total_pages, filename) 
-                 for line in lines]
-        
-        # Calculate line height based on font size
-        line_height = self.fontsize * 1.2  # 20% extra spacing
-        
-        # Total height of text block
-        total_height = line_height * (len(lines) - 1)
-        
-        # Starting Y position (centered vertically)
-        current_y = y + (total_height / 2) if draw_func == "drawCentredString" else y
-        
-        for i, line in enumerate(lines):
-            if i > 0:
-                current_y -= line_height
-            
-            if draw_func == "drawCentredString":
-                self._draw_text_with_shadow(can, x, current_y, line, "drawCentredString")
-            else:
-                self._draw_text_with_shadow(can, x, current_y, line, "drawString")
-        
-        return total_height
-
-    def create_watermark_layer(self, width: float, height: float, 
-                               page_num: int = 1, total_pages: int = 1,
-                               filename: str = "document.pdf") -> io.BytesIO:
-        """Create watermark layer with multi-line and variable support"""
-        
+        # Get dimension key for caching
         dim_key = _get_dimension_key(width, height)
         
-        # For variables to work, we can't cache if variables are present
-        has_variables = self.content and '{' in self.content
-        is_multiline = self.content and ('\n' in self.content or '\\n' in self.content)
+        # Check if settings changed - if so, clear old cache
+        current_settings_key = _get_settings_cache_key(self.settings)
+        global _settings_cache_key
+        if current_settings_key != _settings_cache_key:
+            _dimension_cache.clear()
+            _settings_cache_key = current_settings_key
+            logger.info("🔄 Settings changed, cache cleared")
         
-        # Skip cache if dynamic content (variables or multi-line with variables)
-        if not has_variables and dim_key in _dimension_cache:
-            current_key = _get_settings_cache_key(self.settings)
-            global _settings_cache_key
-            if current_key == _settings_cache_key:
-                logger.info(f"📦 Using cached watermark: {dim_key[0]}x{dim_key[1]}")
-                return io.BytesIO(_dimension_cache[dim_key])
+        # Check dimension cache
+        if dim_key in _dimension_cache:
+            logger.info(f"📦 Using cached watermark for dimensions: {dim_key[0]}x{dim_key[1]}")
+            return io.BytesIO(_dimension_cache[dim_key])
         
-        # Create new layer
-        logger.info(f"🆕 Creating watermark: {dim_key[0]}x{dim_key[1]}")
+        # Create new layer for this dimension
+        logger.info(f"🆕 Creating new watermark for dimensions: {dim_key[0]}x{dim_key[1]}")
         packet = io.BytesIO()
         can = canvas.Canvas(packet, pagesize=(width, height))
         
@@ -404,11 +280,11 @@ class WatermarkEngine:
             'footer': self._draw_footer,
         }.get(self.style, self._draw_diagonal)
         
-        style_method(can, width, height, page_num, total_pages, filename)
+        style_method(can, width, height)
         
-        # Double Layer Effect
+        # Double Layer Effect - Draw second layer
         if self.double_layer and self.content_type == 'text':
-            self._draw_double_layer(can, width, height, page_num, total_pages, filename)
+            self._draw_double_layer(can, width, height)
         
         # Draw all links
         for link in self.links:
@@ -417,64 +293,97 @@ class WatermarkEngine:
         
         can.save()
         
-        # Cache only if no variables (static content)
+        # Cache the watermark bytes
         packet.seek(0)
         data = packet.read()
         
-        if not has_variables and len(_dimension_cache) < MAX_CACHE_SIZE:
-            _dimension_cache[dim_key] = data
+        # Manage cache size
+        if len(_dimension_cache) >= MAX_CACHE_SIZE:
+            # Remove oldest entry (first key)
+            oldest_key = next(iter(_dimension_cache))
+            del _dimension_cache[oldest_key]
+            logger.info(f"🗑️ Cache full, removed oldest: {oldest_key}")
+        
+        _dimension_cache[dim_key] = data
+        logger.info(f"💾 Cached watermark for: {dim_key[0]}x{dim_key[1]} (cache size: {len(_dimension_cache)})")
         
         return io.BytesIO(data)
 
+    # ============================================
+    # GET PAGE DIMENSIONS - NEW HELPER
+    # ============================================
     def _get_page_dimensions(self, page) -> Tuple[float, float, str]:
-        """Extract page dimensions considering rotation"""
+        """
+        Extract actual page dimensions considering rotation and orientation.
+        
+        Returns:
+            Tuple of (width, height, orientation)
+            orientation: 'portrait' or 'landscape'
+        """
         try:
+            # Get MediaBox dimensions
             raw_width = float(page.mediabox.width)
             raw_height = float(page.mediabox.height)
             
+            # Check if page has rotation applied
             rotation = 0
             if hasattr(page, 'get') and '/Rotate' in page:
                 rotation = int(page['/Rotate'])
+            elif hasattr(page, 'rotate'):
+                try:
+                    rotation = int(page.rotate) if page.rotate else 0
+                except:
+                    rotation = 0
             
+            # Adjust dimensions based on rotation
+            # Rotation 90 or 270 means width and height are swapped visually
             if rotation in [90, 270, -90, -270]:
+                # Swap width and height for rotated pages
                 effective_width = raw_height
                 effective_height = raw_width
             else:
                 effective_width = raw_width
                 effective_height = raw_height
             
+            # Determine orientation
             orientation = 'portrait' if effective_height >= effective_width else 'landscape'
+            
             return effective_width, effective_height, orientation
-        except:
-            return 612.0, 792.0, 'portrait'
+            
+        except Exception as e:
+            logger.warning(f"Could not get page dimensions, using defaults: {e}")
+            return 612.0, 792.0, 'portrait'  # Default Letter size
 
     # ============================================
-    # TEXT DRAWING HELPER
+    # TEXT DRAWING HELPER - PROFESSIONAL QUALITY
     # ============================================
     def _draw_text_with_shadow(self, can: canvas.Canvas, x: float, y: float, 
-                               text: str, draw_func: str = "drawString"):
-        """Draw text with shadow/outline effects"""
+                                text: str, draw_func="drawString"):
+        """Helper to draw text with professional 3D shadow and outline"""
         can.saveState()
         
-        # Outline Effect
-        if self.outline:
+        # NEW: Text Outline Effect
+        if self.outline and self.content_type == 'text':
             can.setStrokeColor(colors.black)
             can.setLineWidth(self.outline_width)
             can.setFillColor(self.text_color)
             can.setFillAlpha(self.opacity)
             
+            # Draw with stroke
             if draw_func == "drawCentredString":
                 can.drawCentredString(x, y, text)
             else:
                 can.drawString(x, y, text)
+            
             can.restoreState()
             return
         
-        # Shadow Effect
+        # 3D Shadow Effect
         if self.shadow:
             shadow_opacity = self.opacity * 0.3
             offset_base = max(2, self.fontsize // 12)
             
+            # Multi-layer professional shadow
             for layer in range(3, 0, -1):
                 can.setFillColor(COLORS['black'])
                 can.setFillAlpha(shadow_opacity * (layer / 6))
@@ -487,6 +396,7 @@ class WatermarkEngine:
         
         # Gradient Effect
         if self.gradient_effect:
+            # Create gradient-like effect with multiple layers
             can.setFillColor(self.text_color)
             can.setFillAlpha(self.opacity * 0.6)
             
@@ -495,12 +405,14 @@ class WatermarkEngine:
             else:
                 can.drawString(x, y, text)
             
+            # Lighter top layer
             can.setFillAlpha(self.opacity)
             if draw_func == "drawCentredString":
                 can.drawCentredString(x + 0.5, y + 0.5, text)
             else:
                 can.drawString(x + 0.5, y + 0.5, text)
         else:
+            # Normal text
             can.setFillColor(self.text_color)
             can.setFillAlpha(self.opacity)
             
@@ -511,6 +423,9 @@ class WatermarkEngine:
         
         can.restoreState()
 
+    # ============================================
+    # GET POSITION COORDINATES - NEW FEATURE
+    # ============================================
     def _get_position_coords(self, w: float, h: float) -> Tuple[float, float]:
         """Get x, y coordinates based on position setting"""
         positions = {
@@ -524,14 +439,13 @@ class WatermarkEngine:
         }
         return positions.get(self.position, (w / 2, h / 2))
 
-    def _draw_double_layer(self, can: canvas.Canvas, w: float, h: float,
-                          page_num: int = 1, total_pages: int = 1, filename: str = "document.pdf"):
-        """Draw second watermark layer"""
+    # ============================================
+    # DOUBLE LAYER WATERMARK
+    # ============================================
+    def _draw_double_layer(self, can: canvas.Canvas, w: float, h: float):
+        """Draw second watermark layer for double effect"""
         if self.content_type != 'text' or not self.content:
             return
-        
-        # Process variables
-        text = self._replace_variables(self.content, page_num, total_pages, filename)
         
         can.saveState()
         x, y = self._get_position_coords(w, h)
@@ -543,77 +457,55 @@ class WatermarkEngine:
         can.setFillAlpha(self.opacity * 0.12)
         can.setFont(self.font_name, self.fontsize * 0.75)
         
-        # Handle multi-line in double layer
-        lines = self._split_multiline(text)
-        if lines:
-            line_height = self.fontsize * 0.75 * 1.2
-            start_y = (len(lines) - 1) * line_height / 2
-            
-            for i, line in enumerate(lines):
-                offset = self.double_layer_offset * 3
-                can.drawCentredString(offset, start_y - i * line_height + offset, line)
-        else:
-            offset = self.double_layer_offset * 3
-            can.drawCentredString(offset, offset, text)
+        offset = self.double_layer_offset * 3
+        can.drawCentredString(offset, offset, self.content)
         
         can.restoreState()
 
     # ============================================
-    # STYLE: DIAGONAL - WITH MULTI-LINE & VARIABLES
+    # STYLE: DIAGONAL - WITH POSITION SUPPORT
     # ============================================
-    def _draw_diagonal(self, can: canvas.Canvas, w: float, h: float,
-                       page_num: int = 1, total_pages: int = 1,
-                       filename: str = "document.pdf"):
+    def _draw_diagonal(self, can: canvas.Canvas, w: float, h: float):
         can.saveState()
         x, y = self._get_position_coords(w, h)
         can.translate(x, y)
         can.rotate(self.rotation)
         
         if self.content_type == 'text' and self.content:
-            # Replace variables
-            processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-            
             can.setFont(self.font_name, self.fontsize)
-            
-            # Check for multi-line
-            lines = self._split_multiline(processed_text)
-            if len(lines) > 1:
-                line_height = self.fontsize * 1.2
-                start_y = (len(lines) - 1) * line_height / 2
-                
-                for i, line in enumerate(lines):
-                    self._draw_text_with_shadow(can, 0, start_y - i * line_height, line)
-            else:
-                self._draw_text_with_shadow(can, 0, 0, processed_text)
+            self._draw_text_with_shadow(can, 0, 0, self.content, "drawCentredString")
             
         elif self.content_type == 'image' and self.content and os.path.exists(self.content):
             can.setFillAlpha(self.opacity)
             size = self.imgsize
             try:
-                can.drawImage(self.content, -size/2, -size/2, 
-                             width=size, height=size, mask='auto', preserveAspectRatio=True)
+                can.drawImage(
+                    self.content, -size/2, -size/2, 
+                    width=size, height=size, 
+                    mask='auto', preserveAspectRatio=True
+                )
             except Exception as e:
                 logger.error(f"Image error: {e}")
         can.restoreState()
 
     # ============================================
-    # STYLE: GRID - WITH MULTI-LINE & VARIABLES
+    # STYLE: GRID - WITH GAP CONTROL & TILE PATTERNS
     # ============================================
-    def _draw_grid(self, can: canvas.Canvas, w: float, h: float,
-                   page_num: int = 1, total_pages: int = 1,
-                   filename: str = "document.pdf"):
-        """Grid/tile pattern with multi-line support"""
+    def _draw_grid(self, can: canvas.Canvas, w: float, h: float):
+        """Grid/tile pattern with gap control"""
         
+        # Choose tile pattern
         if self.tile_pattern == 'honeycomb':
-            self._draw_honeycomb(can, w, h, page_num, total_pages, filename)
+            self._draw_honeycomb(can, w, h)
             return
         elif self.tile_pattern == 'wave':
-            self._draw_wave_pattern(can, w, h, page_num, total_pages, filename)
+            self._draw_wave_pattern(can, w, h)
             return
         elif self.tile_pattern == 'spiral':
-            self._draw_spiral_pattern(can, w, h, page_num, total_pages, filename)
+            self._draw_spiral_pattern(can, w, h)
             return
         
+        # Standard grid with gap control
         can.saveState()
         can.translate(w / 2, h / 2)
         can.rotate(self.rotation)
@@ -621,50 +513,40 @@ class WatermarkEngine:
         if self.content_type == 'text' and self.content:
             fontsize = max(14, self.fontsize // 2)
             can.setFont(self.font_name, fontsize)
-            
-            # Process variables
-            processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-            lines = self._split_multiline(processed_text)
         else:
             fontsize = 18
-            lines = None
         
+        # Use gap setting - this is the key feature!
         gap = self.gap
+        
+        # Calculate extent based on gap
         extent = int(math.sqrt(w*w + h*h) / 2) + gap
         
+        # Draw grid with controlled spacing
         for x in range(-extent, extent + 1, gap):
             for y in range(-extent, extent + 1, gap):
                 if self.content_type == 'text' and self.content:
-                    if lines and len(lines) > 1:
-                        line_height = fontsize * 1.1
-                        start_y = (len(lines) - 1) * line_height / 2
-                        for i, line in enumerate(lines):
-                            self._draw_text_with_shadow(can, x, start_y - i * line_height + y, line)
-                    elif lines:
-                        self._draw_text_with_shadow(can, x, y, lines[0])
-                    else:
-                        self._draw_text_with_shadow(can, x, y, processed_text)
-                        
+                    self._draw_text_with_shadow(can, x, y, self.content, "drawCentredString")
                 elif self.content_type == 'image' and self.content and os.path.exists(self.content):
                     size = self.imgsize // 2
                     can.setFillAlpha(self.opacity)
                     try:
-                        can.drawImage(self.content, x - size/2, y - size/2,
-                                     width=size, height=size, mask='auto')
+                        can.drawImage(
+                            self.content, x - size/2, y - size/2,
+                            width=size, height=size, mask='auto'
+                        )
                     except:
                         pass
         can.restoreState()
 
-    def _draw_honeycomb(self, can: canvas.Canvas, w: float, h: float,
-                        page_num: int = 1, total_pages: int = 1,
-                        filename: str = "document.pdf"):
-        """Honeycomb pattern with variables"""
+    # ============================================
+    # NEW: HONEYCOMB PATTERN
+    # ============================================
+    def _draw_honeycomb(self, can: canvas.Canvas, w: float, h: float):
+        """Honeycomb/hexagonal tile pattern"""
         can.saveState()
         fontsize = max(14, self.fontsize // 2)
         can.setFont(self.font_name, fontsize)
-        
-        processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-        lines = self._split_multiline(processed_text)
         
         gap = self.gap
         row = 0
@@ -675,18 +557,13 @@ class WatermarkEngine:
             x = x_offset
             
             while x < w + gap:
+                # Apply rotation at each position
                 can.saveState()
                 can.translate(x, y)
                 can.rotate(self.rotation)
                 
                 if self.content_type == 'text' and self.content:
-                    if lines and len(lines) > 1:
-                        line_height = fontsize * 1.1
-                        start_y = (len(lines) - 1) * line_height / 2
-                        for i, line in enumerate(lines):
-                            self._draw_text_with_shadow(can, 0, start_y - i * line_height, line)
-                    elif lines:
-                        self._draw_text_with_shadow(can, 0, 0, lines[0])
+                    self._draw_text_with_shadow(can, 0, 0, self.content, "drawCentredString")
                 
                 can.restoreState()
                 x += gap
@@ -696,16 +573,15 @@ class WatermarkEngine:
         
         can.restoreState()
 
-    def _draw_wave_pattern(self, can: canvas.Canvas, w: float, h: float,
-                          page_num: int = 1, total_pages: int = 1,
-                          filename: str = "document.pdf"):
-        """Wave pattern with variables"""
+    # ============================================
+    # NEW: WAVE PATTERN
+    # ============================================
+    def _draw_wave_pattern(self, can: canvas.Canvas, w: float, h: float):
+        """Wave-like tile pattern"""
+        import math
         can.saveState()
         fontsize = max(14, self.fontsize // 2)
         can.setFont(self.font_name, fontsize)
-        
-        processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-        lines = self._split_multiline(processed_text)
         
         gap = self.gap
         amplitude = gap * 0.3
@@ -716,6 +592,7 @@ class WatermarkEngine:
         while y < h + gap:
             x = gap
             while x < w + gap:
+                # Wave offset
                 wave_offset = math.sin(x * 0.02 + wave_idx) * amplitude
                 
                 can.saveState()
@@ -723,13 +600,7 @@ class WatermarkEngine:
                 can.rotate(self.rotation)
                 
                 if self.content_type == 'text' and self.content:
-                    if lines and len(lines) > 1:
-                        line_height = fontsize * 1.1
-                        start_y = (len(lines) - 1) * line_height / 2
-                        for i, line in enumerate(lines):
-                            self._draw_text_with_shadow(can, 0, start_y - i * line_height, line)
-                    elif lines:
-                        self._draw_text_with_shadow(can, 0, 0, lines[0])
+                    self._draw_text_with_shadow(can, 0, 0, self.content, "drawCentredString")
                 
                 can.restoreState()
                 x += gap
@@ -739,17 +610,17 @@ class WatermarkEngine:
         
         can.restoreState()
 
-    def _draw_spiral_pattern(self, can: canvas.Canvas, w: float, h: float,
-                            page_num: int = 1, total_pages: int = 1,
-                            filename: str = "document.pdf"):
-        """Spiral pattern with variables"""
+    # ============================================
+    # NEW: SPIRAL PATTERN
+    # ============================================
+    def _draw_spiral_pattern(self, can: canvas.Canvas, w: float, h: float):
+        """Spiral watermark from center"""
+        import math
         can.saveState()
         can.translate(w/2, h/2)
         
         fontsize = max(12, self.fontsize // 2)
         can.setFont(self.font_name, fontsize)
-        
-        processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
         
         theta = 0
         radius = 30
@@ -758,12 +629,13 @@ class WatermarkEngine:
             x = radius * math.cos(theta)
             y = radius * math.sin(theta)
             
+            # Fade out towards edges
             fade = 1 - (radius / (min(w, h) / 2)) * 0.5
             
             can.saveState()
             can.setFillColor(self.text_color)
             can.setFillAlpha(self.opacity * fade)
-            can.drawCentredString(x, y, processed_text)
+            can.drawCentredString(x, y, self.content)
             can.restoreState()
             
             theta += 0.4
@@ -771,9 +643,10 @@ class WatermarkEngine:
         
         can.restoreState()
 
-    def _draw_corner(self, can: canvas.Canvas, w: float, h: float, corner: str,
-                    page_num: int = 1, total_pages: int = 1,
-                    filename: str = "document.pdf"):
+    # ============================================
+    # STYLE: CORNER
+    # ============================================
+    def _draw_corner(self, can: canvas.Canvas, w: float, h: float, corner: str):
         margin = 50
         fontsize = max(14, self.fontsize // 2)
         
@@ -788,24 +661,11 @@ class WatermarkEngine:
         
         if self.content_type == 'text' and self.content:
             can.setFont(self.font_name, fontsize)
-            
-            processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-            lines = self._split_multiline(processed_text)
-            
-            if lines and len(lines) > 1:
-                line_height = fontsize * 1.2
-                for i, line in enumerate(lines):
-                    if corner == 'topright':
-                        text_width = can.stringWidth(line, self.font_name, fontsize)
-                        self._draw_text_with_shadow(can, x - text_width, y - i * line_height, line)
-                    else:
-                        self._draw_text_with_shadow(can, x, y + i * line_height, line)
+            if corner == 'topright':
+                text_width = can.stringWidth(self.content, self.font_name, fontsize)
+                self._draw_text_with_shadow(can, x - text_width, y, self.content, "drawString")
             else:
-                if corner == 'topright':
-                    text_width = can.stringWidth(processed_text, self.font_name, fontsize)
-                    self._draw_text_with_shadow(can, x - text_width, y, processed_text)
-                else:
-                    self._draw_text_with_shadow(can, x, y, processed_text)
+                self._draw_text_with_shadow(can, x, y, self.content, "drawString")
                 
         elif self.content_type == 'image' and self.content and os.path.exists(self.content):
             size = self.imgsize // 2
@@ -817,9 +677,10 @@ class WatermarkEngine:
         
         can.restoreState()
 
-    def _draw_overlay(self, can: canvas.Canvas, w: float, h: float,
-                     page_num: int = 1, total_pages: int = 1,
-                     filename: str = "document.pdf"):
+    # ============================================
+    # STYLE: OVERLAY - OPTIMIZED
+    # ============================================
+    def _draw_overlay(self, can: canvas.Canvas, w: float, h: float):
         if self.content_type != 'text' or not self.content:
             return
         
@@ -827,24 +688,18 @@ class WatermarkEngine:
         fontsize = self.fontsize
         gap = max(fontsize * 4, self.gap)
         
-        processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-        
-        # For overlay, use first line only or single line
-        lines = self._split_multiline(processed_text)
-        text = lines[0] if lines else processed_text
-        text = text + "  •  "
-        
         for y_offset in range(int(h + w), int(-h - w), -gap):
             can.saveState()
             can.translate(0, y_offset)
             can.rotate(-45)
             
             can.setFont(self.font_name, fontsize)
+            text = self.content + "  •  "
             text_width = can.stringWidth(text, self.font_name, fontsize)
             
             x = -w
             while x < w * 2:
-                self._draw_text_with_shadow(can, x, 0, text)
+                self._draw_text_with_shadow(can, x, 0, text, "drawString")
                 x += text_width * 1.2
             can.restoreState()
         
@@ -853,9 +708,7 @@ class WatermarkEngine:
     # ============================================
     # STYLE: BORDER - ALL 20 STYLES
     # ============================================
-    def _draw_border(self, can: canvas.Canvas, w: float, h: float,
-                    page_num: int = 1, total_pages: int = 1,
-                    filename: str = "document.pdf"):
+    def _draw_border(self, can: canvas.Canvas, w: float, h: float):
         margin = 25
         inner_margin = margin + 8
         bwidth = max(1, self.border_width)
@@ -865,7 +718,9 @@ class WatermarkEngine:
         can.setFillColor(self.border_color)
         can.setFillAlpha(self.opacity)
         
+        # All 20 border styles
         border_methods = {
+            # Original 12 styles
             'simple': lambda: self._draw_simple_border(can, w, h, margin, bwidth),
             'double': lambda: self._draw_double_border(can, w, h, margin, inner_margin, bwidth),
             'thick': lambda: self._draw_thick_border(can, w, h, margin, bwidth),
@@ -878,6 +733,7 @@ class WatermarkEngine:
             'elegant': lambda: self._draw_elegant_border(can, w, h, margin, bwidth),
             'flower': lambda: self._draw_symbol_border(can, w, h, margin, bwidth, '✿'),
             'corporate': lambda: self._draw_corporate_border(can, w, h, margin, bwidth),
+            # NEW: 8 advanced styles
             'wave': lambda: self._draw_wave_border(can, w, h, margin, bwidth),
             'gradient': lambda: self._draw_gradient_border(can, w, h, margin, bwidth),
             'stamp': lambda: self._draw_stamp_border(can, w, h, margin, bwidth),
@@ -893,27 +749,17 @@ class WatermarkEngine:
         
         can.restoreState()
         
-        # Draw text at bottom with variables
+        # Draw text at bottom
         if self.content_type == 'text' and self.content:
             can.saveState()
             can.setFont(self.font_name, 12)
-            
-            processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-            lines = self._split_multiline(processed_text)
-            
-            if lines and len(lines) > 1:
-                line_height = 14
-                start_y = margin - 18
-                for i, line in enumerate(lines):
-                    text_width = can.stringWidth(line, self.font_name, 12)
-                    self._draw_text_with_shadow(can, (w - text_width) / 2, start_y - i * line_height, line)
-            else:
-                text_width = can.stringWidth(processed_text, self.font_name, 12)
-                self._draw_text_with_shadow(can, (w - text_width) / 2, margin - 18, processed_text)
-            
+            text_width = can.stringWidth(self.content, self.font_name, 12)
+            self._draw_text_with_shadow(can, (w - text_width) / 2, margin - 18, self.content, "drawString")
             can.restoreState()
 
-    # Border drawing methods (unchanged)
+    # ============================================
+    # BORDER DRAWING METHODS - ORIGINAL 12
+    # ============================================
     def _draw_simple_border(self, can, w, h, margin, bwidth):
         can.setLineWidth(bwidth)
         can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
@@ -930,7 +776,7 @@ class WatermarkEngine:
 
     def _draw_dotted_border(self, can, w, h, margin, bwidth):
         can.setLineWidth(bwidth)
-        can.setDash([4, 4], 0)
+        can.setDash([4, 4], 0)  # FIXED FOR REPORTLAB 4.X
         can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
 
     def _draw_symbol_border(self, can, w, h, margin, bwidth, symbol):
@@ -941,7 +787,7 @@ class WatermarkEngine:
     def _draw_glitter_border(self, can, w, h, margin, bwidth):
         self._draw_corner_symbols(can, w, h, margin, '✦')
         can.setLineWidth(bwidth)
-        can.setDash([2, 3], 0)
+        can.setDash([2, 3], 0)  # FIXED FOR REPORTLAB 4.X
         can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
 
     def _draw_elegant_border(self, can, w, h, margin, bwidth):
@@ -949,8 +795,12 @@ class WatermarkEngine:
         can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
         corner_len = 25
         can.setLineWidth(2)
-        corners = [(margin, margin, 1, 1), (margin, h - margin, 1, -1),
-                   (w - margin, margin, -1, 1), (w - margin, h - margin, -1, -1)]
+        corners = [
+            (margin, margin, 1, 1),
+            (margin, h - margin, 1, -1),
+            (w - margin, margin, -1, 1),
+            (w - margin, h - margin, -1, -1)
+        ]
         for x, y, dx, dy in corners:
             can.line(x, y, x + corner_len * dx, y)
             can.line(x, y, x, y + corner_len * dy)
@@ -963,15 +813,27 @@ class WatermarkEngine:
 
     def _draw_corner_symbols(self, can, w, h, margin, symbol):
         can.setFont('Helvetica', 16)
-        positions = [(margin - 8, margin - 8), (margin - 8, h - margin - 8),
-                     (w - margin - 12, margin - 8), (w - margin - 12, h - margin - 8)]
+        positions = [
+            (margin - 8, margin - 8),
+            (margin - 8, h - margin - 8),
+            (w - margin - 12, margin - 8),
+            (w - margin - 12, h - margin - 8)
+        ]
         for x, y in positions:
             can.drawString(x, y, symbol)
 
+    # ============================================
+    # NEW: ADVANCED BORDER STYLES (8 NEW)
+    # ============================================
     def _draw_wave_border(self, can, w, h, margin, bwidth):
+        """Wave-like border pattern"""
+        import math
         can.setLineWidth(bwidth)
+        
+        # Draw wavy lines on all sides
         points = 60
         
+        # Top wave
         p = can.beginPath()
         p.moveTo(margin, h - margin)
         for i in range(points + 1):
@@ -980,6 +842,7 @@ class WatermarkEngine:
             p.lineTo(x, y)
         can.drawPath(p, stroke=1, fill=0)
         
+        # Bottom wave
         p = can.beginPath()
         p.moveTo(margin, margin)
         for i in range(points + 1):
@@ -988,41 +851,57 @@ class WatermarkEngine:
             p.lineTo(x, y)
         can.drawPath(p, stroke=1, fill=0)
         
+        # Left and right lines
         can.line(margin, margin, margin, h - margin)
         can.line(w - margin, margin, w - margin, h - margin)
 
     def _draw_gradient_border(self, can, w, h, margin, bwidth):
+        """Multiple overlapping borders for gradient effect"""
         for i in range(5):
             offset = i * 3
             can.setStrokeColor(self.border_color)
             can.setFillAlpha(self.opacity * (1 - i * 0.15))
             can.setLineWidth(bwidth + i * 2)
             can.rect(margin + offset, margin + offset, 
-                     w - 2*margin - 2*offset, h - 2*margin - 2*offset, stroke=1, fill=0)
+                     w - 2*margin - 2*offset, h - 2*margin - 2*offset, 
+                     stroke=1, fill=0)
 
     def _draw_stamp_border(self, can, w, h, margin, bwidth):
+        """Postage stamp style border with perforations"""
         can.setLineWidth(bwidth)
         can.rect(margin + 10, margin + 10, w - 2*margin - 20, h - 2*margin - 20, stroke=1, fill=0)
         
+        # Draw perforated edges
         for i in range(int((w - 2*margin) / 12)):
             x = margin + 12 + i * 12
+            # Top
             can.circle(x, h - margin, 3, stroke=1, fill=0)
+            # Bottom
             can.circle(x, margin, 3, stroke=1, fill=0)
         
         for i in range(int((h - 2*margin) / 12)):
             y = margin + 12 + i * 12
+            # Left
             can.circle(margin, y, 3, stroke=1, fill=0)
+            # Right
             can.circle(w - margin, y, 3, stroke=1, fill=0)
 
     def _draw_artdeco_border(self, can, w, h, margin, bwidth):
+        """Art Deco geometric pattern border"""
         can.setLineWidth(bwidth)
         can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
         
+        # Corner decorations
         corner_size = 25
-        corners = [(margin, margin, 1, 1), (margin, h - margin, 1, -1),
-                   (w - margin, margin, -1, 1), (w - margin, h - margin, -1, -1)]
+        corners = [
+            (margin, margin, 1, 1),
+            (margin, h - margin, 1, -1),
+            (w - margin, margin, -1, 1),
+            (w - margin, h - margin, -1, -1)
+        ]
         
         for x, y, dx, dy in corners:
+            # Geometric pattern
             can.setLineWidth(1)
             can.line(x, y, x + corner_size * dx, y)
             can.line(x, y, x, y + corner_size * dy)
@@ -1030,6 +909,7 @@ class WatermarkEngine:
             can.line(x, y + corner_size * dy * 0.5, x + corner_size * dx * 0.5, y + corner_size * dy * 0.5)
 
     def _draw_neon_border(self, can, w, h, margin, bwidth):
+        """Neon glow effect border"""
         for i in range(8, 0, -1):
             can.setStrokeColor(self.border_color)
             can.setFillAlpha(self.opacity * (i / 16))
@@ -1037,27 +917,38 @@ class WatermarkEngine:
             can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
 
     def _draw_ornament_border(self, can, w, h, margin, bwidth):
+        """Corner ornament border"""
         can.setLineWidth(bwidth)
         can.rect(margin + 20, margin + 20, w - 2*margin - 40, h - 2*margin - 40, stroke=1, fill=0)
         
+        # Corner ornaments
         ornaments = ['❖', '◆', '✧', '✦']
         can.setFont('Helvetica', 18)
-        positions = [(margin + 5, h - margin - 12), (w - margin - 18, h - margin - 12),
-                     (margin + 5, margin + 2), (w - margin - 18, margin + 2)]
+        
+        positions = [
+            (margin + 5, h - margin - 12),
+            (w - margin - 18, h - margin - 12),
+            (margin + 5, margin + 2),
+            (w - margin - 18, margin + 2)
+        ]
+        
         for (x, y), ornament in zip(positions, ornaments):
             can.drawString(x, y, ornament)
 
     def _draw_dashdot_border(self, can, w, h, margin, bwidth):
+        """Dash-dot pattern border"""
         can.setLineWidth(bwidth)
-        can.setDash([10, 3, 2, 3], 0)
+        can.setDash([10, 3, 2, 3], 0)  # FIXED FOR REPORTLAB 4.X
         can.rect(margin, margin, w - 2*margin, h - 2*margin, stroke=1, fill=0)
 
     def _draw_certificate_border(self, can, w, h, margin, bwidth):
+        """Certificate style triple line border"""
         for offset in [0, 5, 10]:
             can.setLineWidth(bwidth - offset // 4)
             can.rect(margin + offset, margin + offset, 
                      w - 2*margin - 2*offset, h - 2*margin - 2*offset, stroke=1, fill=0)
         
+        # Corner flourishes
         can.setFont('Helvetica', 20)
         can.drawString(margin - 3, h - margin - 10, '❮')
         can.drawString(w - margin - 12, h - margin - 10, '❯')
@@ -1065,14 +956,11 @@ class WatermarkEngine:
         can.drawString(w - margin - 12, margin - 2, '❯')
 
     # ============================================
-    # STYLE: HEADER & FOOTER - WITH VARIABLES
+    # STYLE: HEADER & FOOTER
     # ============================================
-    def _draw_header(self, can: canvas.Canvas, w: float, h: float,
-                    page_num: int = 1, total_pages: int = 1,
-                    filename: str = "document.pdf"):
+    def _draw_header(self, can: canvas.Canvas, w: float, h: float):
         if self.content_type != 'text' or not self.content:
             return
-        
         can.saveState()
         can.setStrokeColor(self.text_color)
         can.setLineWidth(0.5)
@@ -1081,27 +969,13 @@ class WatermarkEngine:
         
         fontsize = max(12, self.fontsize // 2)
         can.setFont(self.font_name, fontsize)
-        
-        processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-        lines = self._split_multiline(processed_text)
-        
-        if lines and len(lines) > 1:
-            line_height = fontsize * 1.1
-            for i, line in enumerate(lines):
-                text_width = can.stringWidth(line, self.font_name, fontsize)
-                self._draw_text_with_shadow(can, (w - text_width) / 2, h - 28 - i * line_height, line)
-        else:
-            text_width = can.stringWidth(processed_text, self.font_name, fontsize)
-            self._draw_text_with_shadow(can, (w - text_width) / 2, h - 28, processed_text)
-        
+        text_width = can.stringWidth(self.content, self.font_name, fontsize)
+        self._draw_text_with_shadow(can, (w - text_width) / 2, h - 28, self.content, "drawString")
         can.restoreState()
 
-    def _draw_footer(self, can: canvas.Canvas, w: float, h: float,
-                    page_num: int = 1, total_pages: int = 1,
-                    filename: str = "document.pdf"):
+    def _draw_footer(self, can: canvas.Canvas, w: float, h: float):
         if self.content_type != 'text' or not self.content:
             return
-        
         can.saveState()
         can.setStrokeColor(self.text_color)
         can.setLineWidth(0.5)
@@ -1110,21 +984,13 @@ class WatermarkEngine:
         
         fontsize = max(12, self.fontsize // 2)
         can.setFont(self.font_name, fontsize)
-        
-        processed_text = self._replace_variables(self.content, page_num, total_pages, filename)
-        lines = self._split_multiline(processed_text)
-        
-        if lines and len(lines) > 1:
-            line_height = fontsize * 1.1
-            for i, line in enumerate(lines):
-                text_width = can.stringWidth(line, self.font_name, fontsize)
-                self._draw_text_with_shadow(can, (w - text_width) / 2, 12 + i * line_height, line)
-        else:
-            text_width = can.stringWidth(processed_text, self.font_name, fontsize)
-            self._draw_text_with_shadow(can, (w - text_width) / 2, 12, processed_text)
-        
+        text_width = can.stringWidth(self.content, self.font_name, fontsize)
+        self._draw_text_with_shadow(can, (w - text_width) / 2, 12, self.content, "drawString")
         can.restoreState()
 
+    # ============================================
+    # DRAW CLICKABLE LINK BUTTON
+    # ============================================
     def _draw_link_button(self, can: canvas.Canvas, w: float, h: float, link: dict):
         try:
             url = link.get('url', '')
@@ -1133,6 +999,7 @@ class WatermarkEngine:
             if not url:
                 return
             
+            # Position
             if 'top' in position:
                 y_pos = h - 22
             else:
@@ -1153,34 +1020,37 @@ class WatermarkEngine:
             x1 = x_pos - btn_w / 2
             y1 = y_pos - btn_h / 2
             
+            # Shadow
             can.setFillColor(colors.Color(0, 0, 0, alpha=0.12))
             can.roundRect(x1 + 1.5, y1 - 1.5, btn_w, btn_h, 5, stroke=0, fill=1)
             
+            # Button background
             can.setFillColor(colors.Color(0.98, 0.98, 1.0))
             can.setStrokeColor(colors.Color(0.2, 0.4, 0.85))
             can.setLineWidth(1)
             can.roundRect(x1, y1, btn_w, btn_h, 5, stroke=1, fill=1)
             
+            # Button text
             can.setFillColor(colors.Color(0.15, 0.3, 0.8))
             can.drawCentredString(x_pos, y_pos - 3, text)
             
+            # Link area
             can.linkURL(url, (x1, y1, x1 + btn_w, y1 + btn_h), relative=1)
             can.restoreState()
         except Exception as e:
             logger.error(f"Link error: {e}")
 
     # ============================================
-    # PROCESS PDF - WITH UNDERLAY MODE
+    # PROCESS PDF - FIXED: DYNAMIC PER-PAGE DIMENSIONS
     # ============================================
     def process_pdf(self, input_path: str, output_path: str, 
                     filename: str = "document.pdf",
                     progress_callback=None) -> Tuple[bool, str]:
         """
-        Process PDF with:
-        - Dynamic per-page dimensions
-        - UNDERLAY MODE (watermark behind content)
-        - DYNAMIC VARIABLES per page
-        - MULTI-LINE TEXT support
+        Process PDF with DYNAMIC PER-PAGE DIMENSION DETECTION
+        
+        *** MAJOR FIX: Each page now gets its own correctly-sized watermark ***
+        *** Smart caching prevents redundant watermark generation ***
         """
         try:
             if not os.path.exists(input_path):
@@ -1191,115 +1061,121 @@ class WatermarkEngine:
             if total_pages == 0:
                 return False, "PDF has no pages"
             
-            # Log underlay mode
-            if self.underlay:
-                logger.info(f"📄 UNDERLAY MODE: Watermark will be BEHIND content")
-            
             logger.info(f"📄 Processing: {filename} | Pages: {total_pages}")
             
             writer = PdfWriter()
+            
+            # Determine pages to watermark
             pages_to_watermark = self._get_pages_to_watermark(total_pages)
             
-            # Cache for watermarks (only for static content - no variables)
+            # ============================================
+            # CRITICAL FIX: TRACK DIMENSIONS PER PAGE
+            # ============================================
+            # Dictionary to cache watermark pages by dimension
             watermark_cache: Dict[Tuple[int, int], any] = {}
-            dimension_stats: Dict[Tuple[int, int], int] = {}
-            
-            # Check if content has dynamic variables
-            has_variables = self.content and '{' in self.content
-            if has_variables:
-                logger.info("📊 Dynamic variables detected - per-page watermark generation enabled")
+            dimension_stats: Dict[Tuple[int, int], int] = {}  # For logging
             
             for index, page in enumerate(reader.pages):
+                # Progress callback
                 if progress_callback and index % 10 == 0:
                     try:
                         progress_callback(index + 1, total_pages)
                     except:
                         pass
                 
+                # ============================================
+                # KEY FIX: GET EACH PAGE'S ACTUAL DIMENSIONS
+                # ============================================
                 if index in pages_to_watermark:
+                    # Get THIS page's dimensions (not first page!)
                     page_width, page_height, orientation = self._get_page_dimensions(page)
                     dim_key = _get_dimension_key(page_width, page_height)
                     
+                    # Track dimension statistics
                     dimension_stats[dim_key] = dimension_stats.get(dim_key, 0) + 1
                     
-                    # For pages with variables, always create fresh watermark
-                    if has_variables:
-                        watermark_packet = self.create_watermark_layer(
-                            page_width, page_height, 
-                            page_num=index + 1, 
-                            total_pages=total_pages,
-                            filename=filename
+                    # Check if we already have a watermark for this dimension
+                    if dim_key not in watermark_cache:
+                        # Create new watermark for this dimension
+                        logger.info(
+                            f"📐 Page {index + 1}: NEW dimension {dim_key[0]}x{dim_key[1]} ({orientation})"
                         )
+                        watermark_packet = self.create_watermark_layer(page_width, page_height)
                         watermark_pdf = PdfReader(watermark_packet)
-                        watermark_page = watermark_pdf.pages[0]
+                        watermark_cache[dim_key] = watermark_pdf.pages[0]
                     else:
-                        # Use cache for static content
-                        if dim_key not in watermark_cache:
-                            logger.info(f"📐 Page {index + 1}: NEW dimension {dim_key[0]}x{dim_key[1]} ({orientation})")
-                            watermark_packet = self.create_watermark_layer(page_width, page_height)
-                            watermark_pdf = PdfReader(watermark_packet)
-                            watermark_cache[dim_key] = watermark_pdf.pages[0]
-                        else:
-                            logger.info(f"♻️ Page {index + 1}: REUSING cached watermark")
-                        
-                        watermark_page = watermark_cache[dim_key]
+                        # Reuse cached watermark
+                        logger.info(
+                            f"♻️ Page {index + 1}: REUSING cached watermark for {dim_key[0]}x{dim_key[1]}"
+                        )
                     
-                    # ============================================
-                    # UNDERLAY MODE: Watermark BEHIND content
-                    # ============================================
-                    if self.underlay:
-                        # UNDERLAY: Merge watermark UNDER the page content
-                        # This makes watermark appear BEHIND text/images
-                        watermark_page.merge_page(page)
-                        writer.add_page(watermark_page)
-                        logger.debug(f"Page {index + 1}: UNDERLAY applied")
-                    else:
-                        # OVERLAY (default): Watermark ON TOP of content
-                        page.merge_page(watermark_page)
-                        writer.add_page(page)
+                    # Merge the appropriate watermark
+                    page.merge_page(watermark_cache[dim_key])
                 else:
-                    writer.add_page(page)
+                    # Page not in watermark range
+                    pass
+                
+                writer.add_page(page)
             
-            # Log summary
+            # Log dimension summary
             logger.info(f"📊 Dimension Summary for {filename}:")
             for dim, count in dimension_stats.items():
                 logger.info(f"   • {dim[0]}x{dim[1]}: {count} pages")
+            logger.info(f"   Total unique dimensions: {len(dimension_stats)}")
+            logger.info(f"   Watermarks generated: {len(watermark_cache)}")
             
+            # Add metadata if requested
             if self.settings.get('add_metadata'):
                 self._add_metadata(writer, filename)
             
-            # Compression
+            # ============================================
+            # COMPRESSION FOR FILE SIZE
+            # ============================================
+            # Remove duplicate objects
             try:
                 writer.remove_duplicates()
             except:
                 pass
             
+            # Enable content stream compression
             writer.compress_identical_objects = True
             
+            # CRITICAL: Compress all content streams
             try:
                 for page in writer.pages:
                     page.compress_content_streams()
             except Exception as e:
-                logger.warning(f"Compression warning: {e}")
+                logger.warning(f"Content stream compression warning: {e}")
             
+            # Write with compression
             with open(output_path, 'wb') as f:
                 writer.write(f)
             
+            # Log results
             original_size = os.path.getsize(input_path)
             new_size = os.path.getsize(output_path)
             size_change = ((new_size - original_size) / original_size) * 100 if original_size > 0 else 0
             
-            logger.info(f"✅ Done: {filename} | Size: {original_size/1024:.1f}KB → {new_size/1024:.1f}KB ({size_change:+.1f}%)")
+            logger.info(
+                f"✅ Done: {filename} | "
+                f"Size: {original_size/1024:.1f}KB → {new_size/1024:.1f}KB ({size_change:+.1f}%)"
+            )
             
+            # Force garbage collection
             gc.collect()
+            
             return True, f"Processed {total_pages} pages"
             
         except Exception as e:
-            logger.error(f"Error: {str(e)}")
-            return False, str(e)
+            error = f"Error: {str(e)}"
+            logger.error(error)
+            return False, error
 
+    # ============================================
+    # CUSTOM PAGE RANGE PARSER - FIXED
+    # ============================================
     def _get_pages_to_watermark(self, total_pages: int) -> Set[int]:
-        """Get set of page indices to watermark"""
+        """Get set of page indices to watermark with custom range support"""
         if self.page_range == 'all':
             return set(range(total_pages))
         elif self.page_range == 'first':
@@ -1307,6 +1183,7 @@ class WatermarkEngine:
         elif self.page_range == 'last':
             return {total_pages - 1} if total_pages > 0 else set()
         else:
+            # Parse custom page range like "1-5, 8, 10-12"
             pages = set()
             try:
                 parts = str(self.page_range).split(',')
@@ -1314,29 +1191,32 @@ class WatermarkEngine:
                     part = part.strip()
                     if '-' in part:
                         start, end = part.split('-')
-                        start = int(start.strip()) - 1
-                        end = int(end.strip())
+                        start = int(start.strip()) - 1  # Convert to 0-indexed
+                        end = int(end.strip())  # Keep end as is (inclusive)
                         pages.update(range(max(0, start), min(end, total_pages)))
                     else:
-                        page = int(part) - 1
+                        page = int(part) - 1  # Convert to 0-indexed
                         if 0 <= page < total_pages:
                             pages.add(page)
-            except:
+            except Exception as e:
+                logger.warning(f"Invalid page range: {self.page_range}, using all. Error: {e}")
                 pages = set(range(total_pages))
+            
             return pages
 
     def _add_metadata(self, writer: PdfWriter, filename: str):
         """Add metadata to PDF"""
         author = self.settings.get('author') or 'Aryan Bot'
-        location = self.settings.get('location') or 'India'
-        writer.add_metadata({
+        location = self.settings.get('location') or 'Your Heart'
+        metadata = {
             '/Title': filename,
             '/Author': author,
-            '/Producer': 'localhost[Aryan]',
+            '/Producer': '𝖑𝖔𝖈𝖆𝖑𝖍𝖔𝖘𝖙[Aryan]',
             '/Subject': f'Watermarked - {location}',
-            '/Keywords': 'PDF,localhost',
-            '/Creator': 'Created by Aryan @localhost'
-        })
+            '/Keywords': 'PDF,𝖑𝖔𝖈𝖆𝖑𝖍𝖔𝖘𝖙',
+            '/Creator': 'Created by Aryan and localhost, Telegram @hilocalhost'
+        }
+        writer.add_metadata(metadata)
 
 
 # ============================================
@@ -1344,6 +1224,7 @@ class WatermarkEngine:
 # ============================================
 def add_watermark_to_pdf(input_path: str, output_path: str, 
                          settings: dict, filename: str = "document.pdf") -> bool:
+    """Wrapper function to add watermark"""
     engine = WatermarkEngine(settings)
     success, message = engine.process_pdf(input_path, output_path, filename)
     if not success:
@@ -1352,20 +1233,25 @@ def add_watermark_to_pdf(input_path: str, output_path: str,
 
 
 def get_pdf_page_count(input_path: str) -> int:
+    """Get PDF page count"""
     try:
-        return len(PdfReader(input_path).pages)
+        reader = PdfReader(input_path)
+        return len(reader.pages)
     except:
         return 0
 
 
 def validate_pdf_file(input_path: str) -> Tuple[bool, str]:
+    """Validate PDF file"""
     try:
-        return True, f"Valid PDF with {len(PdfReader(input_path).pages)} pages"
+        reader = PdfReader(input_path)
+        return True, f"Valid PDF with {len(reader.pages)} pages"
     except Exception as e:
-        return False, f"Invalid PDF: {e}"
+        return False, f"Invalid PDF: {str(e)}"
 
 
 def clear_cache():
+    """Clear watermark layer cache"""
     global _dimension_cache, _settings_cache_key
     _dimension_cache.clear()
     _settings_cache_key = ""
