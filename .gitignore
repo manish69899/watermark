@@ -5,3 +5,6 @@ processed
 venv
 txt.txt
 wfgit/
+logs/
+temp/
+assets/
