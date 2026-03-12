@@ -1,4 +1,5 @@
 # watermark.py - PROFESSIONAL PDF Watermark Engine
+# FIXED: Dynamic Per-Page Dimension Detection + Smart Caching for Mixed Page Sizes/Orientations
 # IMPROVED: File Size Fix, Better Rendering, Gap Control, Position, Tile Patterns
 # ALL FEATURES PRESERVED + NEW: Outline, Advanced Borders, Compression Fix
 
@@ -62,15 +63,17 @@ GAP_SIZES = {
 }
 
 # ============================================
-# LAYER CACHE - FIXED: Return COPY not same object
+# SMART WATERMARK CACHE - PER-DIMENSION CACHING
 # ============================================
-_layer_cache: Dict[str, bytes] = {}  # Store bytes, not BytesIO
-MAX_CACHE_SIZE = 30
+# Cache stores watermark PDF bytes keyed by (width, height) dimensions
+# This allows reusing watermarks for pages with same dimensions
+_dimension_cache: Dict[Tuple[int, int], bytes] = {}  # Key: (width, height) -> watermark bytes
+_settings_cache_key: str = ""  # Current settings hash
+MAX_CACHE_SIZE = 50
 
-def _get_cache_key(width: float, height: float, settings: dict) -> str:
-    """Generate unique cache key for watermark layer"""
+def _get_settings_cache_key(settings: dict) -> str:
+    """Generate unique cache key based on watermark settings (not dimensions)"""
     key_data = (
-        f"{width:.0f}_{height:.0f}_"
         f"{settings.get('style')}_"
         f"{settings.get('color')}_"
         f"{settings.get('opacity')}_"
@@ -85,9 +88,29 @@ def _get_cache_key(width: float, height: float, settings: dict) -> str:
         f"{settings.get('gap')}_"
         f"{settings.get('position')}_"
         f"{settings.get('outline')}_"
-        f"{settings.get('tile_pattern')}"
+        f"{settings.get('tile_pattern')}_"
+        f"{settings.get('border_color')}_"
+        f"{settings.get('double_layer_color')}_"
+        f"{settings.get('outline_width')}"
     )
     return hashlib.md5(key_data.encode()).hexdigest()
+
+
+def _get_dimension_key(width: float, height: float) -> Tuple[int, int]:
+    """Normalize dimensions to integer tuple for caching (handles floating point variations)"""
+    # Round to nearest integer and normalize orientation
+    w = int(round(width))
+    h = int(round(height))
+    return (w, h)
+
+
+def clear_cache():
+    """Clear all watermark caches"""
+    global _dimension_cache, _settings_cache_key
+    _dimension_cache.clear()
+    _settings_cache_key = ""
+    gc.collect()
+    logger.info("🗑️ All watermark caches cleared")
 
 
 def safe_int(value, default=0) -> int:
@@ -130,6 +153,9 @@ class WatermarkEngine:
     - Gradient Effect
     - Page Range Selection
     - Content Stream Compression (File Size Fix)
+    
+    *** FIXED: Dynamic Per-Page Dimension Detection ***
+    *** FIXED: Smart Caching for Mixed Page PDFs ***
     """
     
     def __init__(self, settings: dict):
@@ -208,6 +234,10 @@ class WatermarkEngine:
         self.text_color = COLORS.get(self.color_name, COLORS['grey'])
         self.border_color = COLORS.get(self.border_color_name, COLORS['grey'])
         
+        # Initialize settings cache key
+        global _settings_cache_key
+        _settings_cache_key = _get_settings_cache_key(self.settings)
+        
         logger.info(
             f"Engine Init: style={self.style}, color={self.color_name}, "
             f"opacity={self.opacity}, shadow={self.shadow}, gap={self.gap}, "
@@ -215,16 +245,26 @@ class WatermarkEngine:
         )
 
     def create_watermark_layer(self, width: float, height: float) -> io.BytesIO:
-        """Create watermark layer - WITH FIXED CACHING"""
+        """Create watermark layer - WITH SMART PER-DIMENSION CACHING"""
         
-        # Check cache first
-        cache_key = _get_cache_key(width, height, self.settings)
-        if cache_key in _layer_cache:
-            logger.info(f"📦 Using cached watermark layer")
-            # FIXED: Return NEW BytesIO with copied data, not same object
-            return io.BytesIO(_layer_cache[cache_key])
+        # Get dimension key for caching
+        dim_key = _get_dimension_key(width, height)
         
-        # Create new layer
+        # Check if settings changed - if so, clear old cache
+        current_settings_key = _get_settings_cache_key(self.settings)
+        global _settings_cache_key
+        if current_settings_key != _settings_cache_key:
+            _dimension_cache.clear()
+            _settings_cache_key = current_settings_key
+            logger.info("🔄 Settings changed, cache cleared")
+        
+        # Check dimension cache
+        if dim_key in _dimension_cache:
+            logger.info(f"📦 Using cached watermark for dimensions: {dim_key[0]}x{dim_key[1]}")
+            return io.BytesIO(_dimension_cache[dim_key])
+        
+        # Create new layer for this dimension
+        logger.info(f"🆕 Creating new watermark for dimensions: {dim_key[0]}x{dim_key[1]}")
         packet = io.BytesIO()
         can = canvas.Canvas(packet, pagesize=(width, height))
         
@@ -253,14 +293,66 @@ class WatermarkEngine:
         
         can.save()
         
-        # FIXED: Store bytes in cache, not BytesIO object
+        # Cache the watermark bytes
         packet.seek(0)
         data = packet.read()
         
-        if len(_layer_cache) < MAX_CACHE_SIZE:
-            _layer_cache[cache_key] = data
+        # Manage cache size
+        if len(_dimension_cache) >= MAX_CACHE_SIZE:
+            # Remove oldest entry (first key)
+            oldest_key = next(iter(_dimension_cache))
+            del _dimension_cache[oldest_key]
+            logger.info(f"🗑️ Cache full, removed oldest: {oldest_key}")
+        
+        _dimension_cache[dim_key] = data
+        logger.info(f"💾 Cached watermark for: {dim_key[0]}x{dim_key[1]} (cache size: {len(_dimension_cache)})")
         
         return io.BytesIO(data)
+
+    # ============================================
+    # GET PAGE DIMENSIONS - NEW HELPER
+    # ============================================
+    def _get_page_dimensions(self, page) -> Tuple[float, float, str]:
+        """
+        Extract actual page dimensions considering rotation and orientation.
+        
+        Returns:
+            Tuple of (width, height, orientation)
+            orientation: 'portrait' or 'landscape'
+        """
+        try:
+            # Get MediaBox dimensions
+            raw_width = float(page.mediabox.width)
+            raw_height = float(page.mediabox.height)
+            
+            # Check if page has rotation applied
+            rotation = 0
+            if hasattr(page, 'get') and '/Rotate' in page:
+                rotation = int(page['/Rotate'])
+            elif hasattr(page, 'rotate'):
+                try:
+                    rotation = int(page.rotate) if page.rotate else 0
+                except:
+                    rotation = 0
+            
+            # Adjust dimensions based on rotation
+            # Rotation 90 or 270 means width and height are swapped visually
+            if rotation in [90, 270, -90, -270]:
+                # Swap width and height for rotated pages
+                effective_width = raw_height
+                effective_height = raw_width
+            else:
+                effective_width = raw_width
+                effective_height = raw_height
+            
+            # Determine orientation
+            orientation = 'portrait' if effective_height >= effective_width else 'landscape'
+            
+            return effective_width, effective_height, orientation
+            
+        except Exception as e:
+            logger.warning(f"Could not get page dimensions, using defaults: {e}")
+            return 612.0, 792.0, 'portrait'  # Default Letter size
 
     # ============================================
     # TEXT DRAWING HELPER - PROFESSIONAL QUALITY
@@ -949,12 +1041,17 @@ class WatermarkEngine:
             logger.error(f"Link error: {e}")
 
     # ============================================
-    # PROCESS PDF - WITH COMPRESSION (FILE SIZE FIX)
+    # PROCESS PDF - FIXED: DYNAMIC PER-PAGE DIMENSIONS
     # ============================================
     def process_pdf(self, input_path: str, output_path: str, 
                     filename: str = "document.pdf",
                     progress_callback=None) -> Tuple[bool, str]:
-        """Process PDF with COMPRESSION for minimum file size"""
+        """
+        Process PDF with DYNAMIC PER-PAGE DIMENSION DETECTION
+        
+        *** MAJOR FIX: Each page now gets its own correctly-sized watermark ***
+        *** Smart caching prevents redundant watermark generation ***
+        """
         try:
             if not os.path.exists(input_path):
                 return False, "Input file not found"
@@ -971,19 +1068,12 @@ class WatermarkEngine:
             # Determine pages to watermark
             pages_to_watermark = self._get_pages_to_watermark(total_pages)
             
-            # Get dimensions from first page for watermark layer
-            if pages_to_watermark:
-                first_page = reader.pages[0]
-                try:
-                    page_width = float(first_page.mediabox.width)
-                    page_height = float(first_page.mediabox.height)
-                except:
-                    page_width, page_height = 612.0, 792.0
-                
-                # Create watermark once
-                watermark_packet = self.create_watermark_layer(page_width, page_height)
-                watermark_pdf = PdfReader(watermark_packet)
-                watermark_page = watermark_pdf.pages[0]
+            # ============================================
+            # CRITICAL FIX: TRACK DIMENSIONS PER PAGE
+            # ============================================
+            # Dictionary to cache watermark pages by dimension
+            watermark_cache: Dict[Tuple[int, int], any] = {}
+            dimension_stats: Dict[Tuple[int, int], int] = {}  # For logging
             
             for index, page in enumerate(reader.pages):
                 # Progress callback
@@ -993,18 +1083,53 @@ class WatermarkEngine:
                     except:
                         pass
                 
+                # ============================================
+                # KEY FIX: GET EACH PAGE'S ACTUAL DIMENSIONS
+                # ============================================
                 if index in pages_to_watermark:
-                    # Merge watermark
-                    page.merge_page(watermark_page)
+                    # Get THIS page's dimensions (not first page!)
+                    page_width, page_height, orientation = self._get_page_dimensions(page)
+                    dim_key = _get_dimension_key(page_width, page_height)
+                    
+                    # Track dimension statistics
+                    dimension_stats[dim_key] = dimension_stats.get(dim_key, 0) + 1
+                    
+                    # Check if we already have a watermark for this dimension
+                    if dim_key not in watermark_cache:
+                        # Create new watermark for this dimension
+                        logger.info(
+                            f"📐 Page {index + 1}: NEW dimension {dim_key[0]}x{dim_key[1]} ({orientation})"
+                        )
+                        watermark_packet = self.create_watermark_layer(page_width, page_height)
+                        watermark_pdf = PdfReader(watermark_packet)
+                        watermark_cache[dim_key] = watermark_pdf.pages[0]
+                    else:
+                        # Reuse cached watermark
+                        logger.info(
+                            f"♻️ Page {index + 1}: REUSING cached watermark for {dim_key[0]}x{dim_key[1]}"
+                        )
+                    
+                    # Merge the appropriate watermark
+                    page.merge_page(watermark_cache[dim_key])
+                else:
+                    # Page not in watermark range
+                    pass
                 
                 writer.add_page(page)
+            
+            # Log dimension summary
+            logger.info(f"📊 Dimension Summary for {filename}:")
+            for dim, count in dimension_stats.items():
+                logger.info(f"   • {dim[0]}x{dim[1]}: {count} pages")
+            logger.info(f"   Total unique dimensions: {len(dimension_stats)}")
+            logger.info(f"   Watermarks generated: {len(watermark_cache)}")
             
             # Add metadata if requested
             if self.settings.get('add_metadata'):
                 self._add_metadata(writer, filename)
             
             # ============================================
-            # CRITICAL FIX: COMPRESSION FOR FILE SIZE
+            # COMPRESSION FOR FILE SIZE
             # ============================================
             # Remove duplicate objects
             try:
@@ -1127,7 +1252,8 @@ def validate_pdf_file(input_path: str) -> Tuple[bool, str]:
 
 def clear_cache():
     """Clear watermark layer cache"""
-    global _layer_cache
-    _layer_cache.clear()
+    global _dimension_cache, _settings_cache_key
+    _dimension_cache.clear()
+    _settings_cache_key = ""
     gc.collect()
-    logger.info("🗑️ Layer cache cleared")
+    logger.info("🗑️ All caches cleared")
