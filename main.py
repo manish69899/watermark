@@ -2,6 +2,7 @@
 # IMPROVED: Memory Management, Gap Control, Position, Preview, User Preferences
 # FIXED: Background Task Worker Architecture for Bulk Processing (100+ files safely)
 # FIXED: Upload Timeout Issue, Safe File Transmission, Auto-Retry
+# NEW: Underlay Mode, Dynamic Variables, Multi-line Text Support
 
 import os
 import shutil
@@ -73,15 +74,12 @@ logging.getLogger("WatermarkEngine").setLevel(logging.INFO)
 # ============================================
 # THREAD POOL FOR CONCURRENT PROCESSING
 # ============================================
-# Ye heavy processing (Watermarking) ke liye thread pool hai
 executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_TASKS)
 
 # ============================================
-# TASK QUEUE SYSTEM (ASLI BACKGROUND WORKER)
+# TASK QUEUE SYSTEM
 # ============================================
-# Ye global queue hai jahan saari aane wali files store hongi bina RAM khaye
 main_task_queue = asyncio.Queue()
-# Cancellation track karne ke liye dictionary
 task_status: Dict[str, str] = {} 
 
 # ============================================
@@ -93,10 +91,10 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     in_memory=USE_MEMORY_SESSION,
-    max_concurrent_transmissions=3 # FIX FOR TIMEOUTS: Limits upload chunks rate
+    max_concurrent_transmissions=3
 )
 
-# Bot start time - ignore old messages
+# Bot start time
 BOT_START_TIME = time.time()
 
 # ============================================
@@ -145,6 +143,7 @@ def save_user_last_settings(user_id: int, data: dict):
         'last_gap': data.get('gap'),
         'last_position': data.get('position'),
         'last_outline': data.get('outline'),
+        'last_underlay': data.get('underlay'),  # NEW: Save underlay preference
         'last_activity': time.time()
     }
     save_user_preferences()
@@ -162,13 +161,13 @@ def get_data(user_id: int) -> dict:
         # Apply user's last settings if available
         last_settings = get_user_last_settings(user_id)
         if last_settings:
-            for key in ['style', 'color', 'opacity', 'fontsize', 'add_shadow', 'gap', 'position', 'outline']:
+            for key in ['style', 'color', 'opacity', 'fontsize', 'add_shadow', 'gap', 'position', 'outline', 'underlay']:
                 if last_settings.get(f'last_{key}'):
                     user_data[user_id][key] = last_settings[f'last_{key}']
     return user_data[user_id]
 
 def create_default_data() -> dict:
-    """Create default user data structure"""
+    """Create default user data structure - WITH ALL NEW FEATURES"""
     return {
         'type': 'text',
         'content': '',
@@ -192,22 +191,28 @@ def create_default_data() -> dict:
         'add_shadow': False,
         'page_range': 'all',
         'font_path': '',
-        # NEW: Double Layer Feature
+        # Double Layer Feature
         'double_layer': False,
         'double_layer_offset': 5,
         'double_layer_color': 'black',
-        # NEW: Gradient Effect
+        # Gradient Effect
         'gradient_effect': False,
-        # NEW: Gap/Spacing Control
+        # Gap/Spacing Control
         'gap': 'medium',
         'gap_custom': 200,
-        # NEW: Position
+        # Position
         'position': 'center',
-        # NEW: Tile Pattern
+        # Tile Pattern
         'tile_pattern': 'grid',
-        # NEW: Text Outline
+        # Text Outline
         'outline': False,
         'outline_width': 2,
+        # ============================================
+        # NEW FEATURE: UNDERLAY MODE
+        # ============================================
+        # underlay=True = Watermark BEHIND content (professional look)
+        # underlay=False = Watermark ON TOP of content (default)
+        'underlay': False,
         # Activity tracking
         'last_activity': time.time()
     }
@@ -227,7 +232,7 @@ async def cleanup_task():
         try:
             current_time = time.time()
             
-            # 1. Cleanup old user sessions
+            # Cleanup old user sessions
             users_to_remove = []
             for user_id, data in user_data.items():
                 last_activity = data.get('last_activity', 0)
@@ -240,18 +245,18 @@ async def cleanup_task():
             if users_to_remove:
                 logger.info(f"🧹 Cleaned {len(users_to_remove)} inactive sessions")
             
-            # 2. Clear watermark cache
+            # Clear watermark cache
             clear_cache()
             
-            # 3. Delete old temp files
+            # Delete old temp files
             cleaned_files = cleanup_temp_files(SESSION_TIMEOUT_SECONDS)
             if cleaned_files:
                 logger.info(f"🧹 Deleted {cleaned_files} old temp files")
             
-            # 4. Force garbage collection
+            # Force garbage collection
             gc.collect()
             
-            # 5. Check storage usage
+            # Check storage usage
             storage_mb = get_storage_usage()
             if storage_mb > MAX_STORAGE_MB:
                 logger.warning(f"⚠️ Storage high: {storage_mb}MB, forcing cleanup")
@@ -259,7 +264,7 @@ async def cleanup_task():
                     shutil.rmtree(directory, ignore_errors=True)
                     os.makedirs(directory, exist_ok=True)
             
-            # 6. Clear old processing tasks
+            # Clear old processing tasks
             processing_tasks.clear()
             
             logger.info(f"✅ Cleanup complete | Users: {len(user_data)} | Storage: {storage_mb}MB")
@@ -286,12 +291,20 @@ def is_old_message(message: Message) -> bool:
     return False
 
 def get_summary_text(data: dict) -> str:
-    """Generate summary of what will be added to PDF"""
+    """Generate summary of what will be added to PDF - WITH NEW FEATURES"""
     lines = ["📋 *PDF ME YE ADD HOGA:*\n"]
     
     if data.get('type') == 'text' and data.get('content'):
         text = data['content'][:40]
-        lines.append(f"📝 *Text:* `{text}`")
+        # Check for multi-line
+        if '\\n' in text or '\n' in text:
+            lines.append(f"📝 *Text:* (Multi-line)")
+        else:
+            lines.append(f"📝 *Text:* `{text}`")
+        
+        # Check for dynamic variables
+        if '{' in data.get('content', ''):
+            lines.append(f"📊 *Variables:* ENABLED (Page#, Date, etc.)")
     elif data.get('type') == 'image':
         lines.append("🖼️ *Logo:* Image Watermark")
     
@@ -300,6 +313,14 @@ def get_summary_text(data: dict) -> str:
         
     style = data.get('style', 'diagonal')
     lines.append(f"🎨 *Style:* {style.upper()}")
+    
+    # ============================================
+    # NEW FEATURE: UNDERLAY MODE IN SUMMARY
+    # ============================================
+    if data.get('underlay'):
+        lines.append(f"🔹 *Layer:* UNDERLAY (Behind Content)")
+    else:
+        lines.append(f"🔹 *Layer:* OVERLAY (On Top)")
     
     if style in ['grid', 'diagonal'] and data.get('gap'):
         gap = data.get('gap')
@@ -394,7 +415,6 @@ class ProgressTracker:
     async def update(self, current: int, total: int):
         """Update progress message"""
         now = time.time()
-        # Update every 3 seconds max (reduced API calls)
         if now - self.last_update < 3:
             return
         self.last_update = now
@@ -412,7 +432,7 @@ class ProgressTracker:
             pass
 
 class UploadTracker:
-    """Track PDF uploading progress to avoid timeouts"""
+    """Track PDF uploading progress"""
     def __init__(self, message):
         self.message = message
         self.last_update = 0
@@ -436,10 +456,10 @@ class UploadTracker:
             pass
 
 # ============================================
-# SAFE UPLOAD FUNCTION (PREVENTS TIMEOUTS)
+# SAFE UPLOAD FUNCTION
 # ============================================
 async def safe_send_document(message: Message, status_msg: Message, document_path: str, filename: str, caption: str, max_retries=3):
-    """Safely uploads document with auto-retries on Telegram API timeout"""
+    """Safely uploads document with auto-retries"""
     upload_tracker = UploadTracker(status_msg)
     
     for attempt in range(max_retries):
@@ -453,12 +473,12 @@ async def safe_send_document(message: Message, status_msg: Message, document_pat
             )
             return True
         except FloodWait as e:
-            logger.warning(f"FloodWait encountered: Sleeping for {e.value}s")
+            logger.warning(f"FloodWait: Sleeping for {e.value}s")
             await asyncio.sleep(e.value + 1)
         except RPCError as e:
-            logger.error(f"Telegram RPC Error during upload (Attempt {attempt+1}): {e}")
+            logger.error(f"RPC Error (Attempt {attempt+1}): {e}")
             if attempt < max_retries - 1:
-                await status_msg.edit_text(f"⚠️ Network issue. Retrying upload ({attempt+1}/{max_retries})...")
+                await status_msg.edit_text(f"⚠️ Network issue. Retrying ({attempt+1}/{max_retries})...")
                 await asyncio.sleep(5)
             else:
                 raise e
@@ -489,9 +509,9 @@ async def cmd_start(client: Client, message: Message):
         "• 🖼 Logo/Image Watermark\n"
         "• 🔤 Custom Font Upload (.ttf)\n"
         "• 🎨 8 Styles, 20 Borders, 18 Colors\n"
-        "• 📏 Gap/Spacing Control (NEW)\n"
-        "• 📍 Position Presets (NEW)\n"
-        "• 🔷 Tile Patterns (NEW)\n"
+        "• 📏 Gap/Spacing Control\n"
+        "• 📍 Position Presets\n"
+        "• 🔷 Tile Patterns\n"
         "• 🔗 Multiple Clickable Links\n"
         "• 📑 Custom Page Ranges\n"
         "• 📦 ZIP File Batch Support\n"
@@ -499,6 +519,10 @@ async def cmd_start(client: Client, message: Message):
         "• 🌈 Gradient Effect\n"
         "• ⚡ Quick Presets\n"
         "• 📦 Optimized File Size\n\n"
+        "🔥 *NEW FEATURES:*\n"
+        "• 🔻 Underlay Mode (Watermark behind content)\n"
+        "• 📊 Dynamic Variables: `{page}`, `{date}`, `{filename}`\n"
+        "• 📝 Multi-line Text (use `\\n` in text)\n\n"
         "🚀 *Send TEXT, IMAGE, FONT, or use MENU!*"
     )
     await message.reply_text(
@@ -522,17 +546,25 @@ async def cmd_help(client: Client, message: Message):
         "1️⃣ Send TEXT or IMAGE\n"
         "2️⃣ Choose STYLE & COLOR\n"
         "3️⃣ Adjust OPACITY & SIZE\n"
-        "4️⃣ Set GAP/SPACING (for grid)\n"
+        "4️⃣ Set GAP/SPACING\n"
         "5️⃣ Choose POSITION\n"
-        "6️⃣ Add EFFECTS (Shadow/Outline/Double)\n"
+        "6️⃣ Add EFFECTS\n"
         "7️⃣ Add LINKS (Optional)\n"
         "8️⃣ Send PDF or ZIP file\n\n"
-        "📏 *Gap Control:*\n"
-        "• Grid/Tiles ke liye gap adjust karo\n"
-        "• Small = Tight spacing\n"
-        "• Medium = Balanced\n"
-        "• Large = Wide spacing\n"
-        "• Custom = Apna value\n\n"
+        "🔥 *NEW: Underlay Mode*\n"
+        "• Watermark content ke PEECHE lagao\n"
+        "• Professional documents ke liye\n"
+        "• Text readable rahega\n\n"
+        "📊 *NEW: Dynamic Variables*\n"
+        "Use these in your text:\n"
+        "• `{page}` - Current page number\n"
+        "• `{total}` - Total pages\n"
+        "• `{date}` - Current date\n"
+        "• `{filename}` - PDF filename\n"
+        "Example: `Page {page} of {total}`\n\n"
+        "📝 *NEW: Multi-line Text*\n"
+        "Use `\\n` for new line:\n"
+        "Example: `CONFIDENTIAL\\nCompany Name`\n\n"
         "📝 *Commands:*\n"
         "/start - Begin\n"
         "/reset - Clear settings\n"
@@ -706,9 +738,10 @@ async def handle_text(client: Client, message: Message):
             )
         return
     
-    if len(text) > 150:
+    # Increased limit for multi-line and variables
+    if len(text) > 200:
         await message.reply_text(
-            "⚠️ Text too long! Max 150 chars.", 
+            "⚠️ Text too long! Max 200 chars.", 
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -716,17 +749,32 @@ async def handle_text(client: Client, message: Message):
     data['type'] = 'text'
     data['content'] = text.strip()
     
-    if len(text) < 10:
+    # Auto-adjust font size based on text length
+    line_count = len(text.split('\\n')) if '\\n' in text else len(text.split('\n'))
+    char_count = len(text.replace('\\n', '').replace('\n', ''))
+    
+    if line_count > 2:
+        data['fontsize'] = 24
+    elif char_count < 10:
         data['fontsize'] = 60
-    elif len(text) < 25:
+    elif char_count < 25:
         data['fontsize'] = 48
-    elif len(text) < 50:
+    elif char_count < 50:
         data['fontsize'] = 36
     else:
         data['fontsize'] = 28
     
+    # Check for special features in text
+    hints = []
+    if '{' in text:
+        hints.append("📊 Variables detected!")
+    if '\\n' in text or '\n' in text:
+        hints.append("📝 Multi-line detected!")
+    
+    hint_text = "\n\n" + "\n".join(hints) if hints else ""
+    
     await message.reply_text(
-        f"✅ Text: `{text}`\n\n🎨 Choose watermark style:", 
+        f"✅ Text: `{text[:50]}{'...' if len(text) > 50 else ''}`{hint_text}\n\n🎨 Choose watermark style:", 
         reply_markup=kb.get_style_keyboard(), 
         parse_mode=ParseMode.MARKDOWN
     )
@@ -761,7 +809,7 @@ async def handle_photo(client: Client, message: Message):
         )
 
 # ============================================
-# HANDLE DOCUMENTS (PDF, ZIP, TTF) - NOW QUEUES ITEMS
+# HANDLE DOCUMENTS
 # ============================================
 @app.on_message(filters.document)
 async def handle_document(client: Client, message: Message):
@@ -803,8 +851,7 @@ async def handle_document(client: Client, message: Message):
         await message.reply_text(
             f"❌ *File too large!*\n\n"
             f"Maximum size: {MAX_DOWNLOAD_SIZE // 1024 // 1024}MB\n"
-            f"Your file: {message.document.file_size // 1024 // 1024}MB\n\n"
-            f"Please send a smaller file.",
+            f"Your file: {message.document.file_size // 1024 // 1024}MB",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -823,29 +870,28 @@ async def handle_document(client: Client, message: Message):
         )
         return
     
-    # Enable processing flag for cancellation
+    # Enable processing flag
     processing_tasks[user_id] = True
     
-    # Create a unique Task ID
+    # Create Task ID
     task_id = f"{message.chat.id}_{message.id}"
     task_status[task_id] = "pending"
     
-    # Add to the background queue instantly!
     pos = main_task_queue.qsize() + 1
     
     cancel_kb = kb.InlineKeyboardMarkup([[kb.InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{task_id}")]])
     status_msg = await message.reply_text(
-        f"⏳ *Added to Queue*\n\n📄 File: `{filename}`\n🔢 Queue Position: {pos}\n\n_Please wait, bot is processing tasks one by one..._",
+        f"⏳ *Added to Queue*\n\n📄 File: `{filename}`\n🔢 Queue Position: {pos}\n\n_Please wait..._",
         reply_markup=cancel_kb,
         parse_mode=ParseMode.MARKDOWN
     )
     
-    # Put task data into the Async Queue
+    # Put task into queue
     task_data = {
         'id': task_id,
         'client': client,
         'message': message,
-        'data': copy.deepcopy(data), # Snapshot of current settings
+        'data': copy.deepcopy(data),
         'filename': filename,
         'status_msg': status_msg,
         'is_zip': ext == 'zip' or 'zip' in mime.lower()
@@ -878,13 +924,19 @@ async def handle_callback(client: Client, query: CallbackQuery):
         if cb.startswith('preset_'):
             await handle_preset(query, data, cb)
         elif cb == 'menu_text':
-            await query.edit_message_text("📝 Send your watermark text:")
+            await query.edit_message_text(
+                "📝 Send your watermark text:\n\n"
+                "📊 *Variables:* `{page}`, `{total}`, `{date}`, `{filename}`\n"
+                "📝 *Multi-line:* Use `\\n` for new line\n"
+                "Example: `CONFIDENTIAL\\nPage {page}`",
+                parse_mode=ParseMode.MARKDOWN
+            )
         elif cb == 'menu_image':
             await query.edit_message_text("🖼️ Send your logo image:")
         elif cb == 'menu_font':
-            await query.edit_message_text("🔤 Send me a `.ttf` or `.otf` font file to upload:")
+            await query.edit_message_text("🔤 Send me a `.ttf` or `.otf` font file:")
         elif cb == 'menu_presets':
-            await query.edit_message_text("⚡ QUICK PRESETS - One Click Setup:", reply_markup=kb.get_quick_presets_keyboard())
+            await query.edit_message_text("⚡ QUICK PRESETS:", reply_markup=kb.get_quick_presets_keyboard())
         elif cb == 'menu_help':
             await query.edit_message_text("❓ HELP CENTER", reply_markup=kb.get_help_keyboard())
         elif cb == 'back_main':
@@ -918,8 +970,7 @@ async def handle_callback(client: Client, query: CallbackQuery):
             if gap == 'custom':
                 data['step'] = 'waiting_custom_gap'
                 await query.edit_message_text(
-                    "📏 Enter custom gap (80-500):\n\n"
-                    "_Recommended: 150-250 for balanced look_", 
+                    "📏 Enter custom gap (80-500):\n\n_Recommended: 150-250_", 
                     parse_mode=ParseMode.MARKDOWN
                 )
             elif gap == 'default':
@@ -958,16 +1009,37 @@ async def handle_callback(client: Client, query: CallbackQuery):
                     reply_markup=kb.get_outline_width_keyboard()
                 )
             else:
+                # NEW: Ask for underlay mode after outline
+                await query.edit_message_text(
+                    "🔻 Choose layer mode:", 
+                    reply_markup=kb.get_underlay_keyboard()
+                )
+        elif cb.startswith('owidth_'):
+            data['outline_width'] = int(cb.replace('owidth_', ''))
+            # NEW: Ask for underlay mode
+            await query.edit_message_text(
+                "🔻 Choose layer mode:", 
+                reply_markup=kb.get_underlay_keyboard()
+            )
+        # ============================================
+        # NEW FEATURE: UNDERLAY MODE CALLBACK
+        # ============================================
+        elif cb.startswith('underlay_'):
+            data['underlay'] = (cb.replace('underlay_', '') == 'yes')
+            if data['underlay']:
+                await query.edit_message_text(
+                    "✅ *UNDERLAY Mode Enabled!*\n\n"
+                    "Watermark will appear BEHIND content.\n"
+                    "Great for professional documents!\n\n"
+                    "📑 On which pages do you want this?",
+                    reply_markup=kb.get_page_range_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            else:
                 await query.edit_message_text(
                     "📑 On which pages do you want this?", 
                     reply_markup=kb.get_page_range_keyboard()
                 )
-        elif cb.startswith('owidth_'):
-            data['outline_width'] = int(cb.replace('owidth_', ''))
-            await query.edit_message_text(
-                "📑 On which pages do you want this?", 
-                reply_markup=kb.get_page_range_keyboard()
-            )
         elif cb.startswith('bstyle_'):
             bstyle = cb.replace('bstyle_', '')
             if bstyle == 'skip':
@@ -1007,9 +1079,10 @@ async def handle_callback(client: Client, query: CallbackQuery):
                     reply_markup=kb.get_fontsize_keyboard()
                 )
             else:
+                # For images, skip to underlay
                 await query.edit_message_text(
-                    "📑 On which pages do you want this?", 
-                    reply_markup=kb.get_page_range_keyboard()
+                    "🔻 Choose layer mode:", 
+                    reply_markup=kb.get_underlay_keyboard()
                 )
         elif cb.startswith('fsize_'):
             data['fontsize'] = int(cb.replace('fsize_', ''))
@@ -1020,8 +1093,8 @@ async def handle_callback(client: Client, query: CallbackQuery):
         elif cb.startswith('isize_'):
             data['imgsize'] = int(cb.replace('isize_', ''))
             await query.edit_message_text(
-                "📑 On which pages do you want this?", 
-                reply_markup=kb.get_page_range_keyboard()
+                "🔻 Choose layer mode:", 
+                reply_markup=kb.get_underlay_keyboard()
             )
         elif cb == 'effect_shadow':
             await query.edit_message_text(
@@ -1030,7 +1103,7 @@ async def handle_callback(client: Client, query: CallbackQuery):
             )
         elif cb == 'effect_double':
             await query.edit_message_text(
-                "🎭 Add Double Layer Watermark?\n(Second watermark at 90° rotation)", 
+                "🎭 Add Double Layer Watermark?", 
                 reply_markup=kb.get_double_layer_keyboard()
             )
         elif cb == 'effect_gradient':
@@ -1048,9 +1121,10 @@ async def handle_callback(client: Client, query: CallbackQuery):
             data['double_layer'] = False
             data['gradient_effect'] = False
             data['outline'] = False
+            # NEW: Ask for underlay mode
             await query.edit_message_text(
-                "📑 On which pages do you want this?", 
-                reply_markup=kb.get_page_range_keyboard()
+                "🔻 Choose layer mode:", 
+                reply_markup=kb.get_underlay_keyboard()
             )
         elif cb.startswith('shadow_'):
             data['add_shadow'] = (cb.replace('shadow_', '') == 'yes')
@@ -1123,7 +1197,7 @@ async def handle_callback(client: Client, query: CallbackQuery):
         elif cb == 'link_skip':
             data['links'] = []
             await query.edit_message_text(
-                "🕵️ Add hidden metadata to PDF?\n(Author name, location etc.)", 
+                "🕵️ Add hidden metadata to PDF?", 
                 reply_markup=kb.get_metadata_keyboard()
             )
         elif cb.startswith('lpos_'):
@@ -1136,7 +1210,7 @@ async def handle_callback(client: Client, query: CallbackQuery):
             await handle_link_text(query, data, cb)
         elif cb == 'link_done':
             await query.edit_message_text(
-                "🕵️ Add hidden metadata to PDF?\n(Author name, location etc.)", 
+                "🕵️ Add hidden metadata to PDF?", 
                 reply_markup=kb.get_metadata_keyboard()
             )
         elif cb == 'link_view':
@@ -1189,6 +1263,18 @@ async def handle_callback(client: Client, query: CallbackQuery):
             await query.edit_message_text("📍 Choose Position:", reply_markup=kb.get_position_keyboard())
         elif cb == 'set_outline':
             await query.edit_message_text("✏️ Toggle Text Outline:", reply_markup=kb.get_outline_keyboard())
+        # ============================================
+        # NEW: UNDERLAY SETTING BUTTON
+        # ============================================
+        elif cb == 'set_underlay':
+            await query.edit_message_text(
+                "🔻 *LAYER MODE*\n\n"
+                "• *OVERLAY* - Watermark on TOP of content\n"
+                "• *UNDERLAY* - Watermark BEHIND content\n\n"
+                "Underlay is best for professional documents!",
+                reply_markup=kb.get_underlay_keyboard(),
+                parse_mode=ParseMode.MARKDOWN
+            )
         elif cb == 'set_prange':
             await query.edit_message_text("📑 Choose Page Range:", reply_markup=kb.get_page_range_keyboard())
         elif cb == 'set_links':
@@ -1219,6 +1305,7 @@ async def handle_preset(query: CallbackQuery, data: dict, cb: str):
             'fontsize': 48, 'rotation': 45, 'add_shadow': False,
             'double_layer': False, 'gradient_effect': False,
             'outline': False, 'gap': 'medium', 'position': 'center',
+            'underlay': False,  # NEW
             'msg': "✅ *Quick Diagonal Applied!*\n\n• Style: DIAGONAL\n• Color: GREY\n• Opacity: 30%\n\n📂 *Send PDF or ZIP file now!*"
         },
         'bold_red': {
@@ -1226,6 +1313,7 @@ async def handle_preset(query: CallbackQuery, data: dict, cb: str):
             'fontsize': 60, 'rotation': 45, 'add_shadow': True,
             'double_layer': False, 'gradient_effect': False,
             'outline': False, 'gap': 'medium', 'position': 'center',
+            'underlay': False,
             'msg': "✅ *Bold Red Applied!*\n\n• Style: DIAGONAL\n• Color: RED\n• Opacity: 70%\n• 3D Shadow: YES\n\n📂 *Send PDF or ZIP file now!*"
         },
         'elegant_blue': {
@@ -1233,6 +1321,7 @@ async def handle_preset(query: CallbackQuery, data: dict, cb: str):
             'fontsize': 52, 'rotation': 45, 'add_shadow': False,
             'double_layer': False, 'gradient_effect': False,
             'outline': False, 'gap': 'medium', 'position': 'center',
+            'underlay': False,
             'msg': "✅ *Elegant Blue Applied!*\n\n• Style: DIAGONAL\n• Color: BLUE\n• Opacity: 25%\n\n📂 *Send PDF or ZIP file now!*"
         },
         'border_grey': {
@@ -1240,6 +1329,7 @@ async def handle_preset(query: CallbackQuery, data: dict, cb: str):
             'border_width': 2, 'opacity': 0.4, 'add_shadow': False,
             'double_layer': False, 'gradient_effect': False,
             'outline': False, 'gap': 'medium', 'position': 'center',
+            'underlay': False,
             'msg': "✅ *Border Frame Applied!*\n\n• Style: BORDER\n• Border: ELEGANT\n• Color: GREY\n\n📂 *Send PDF or ZIP file now!*"
         },
         'header_black': {
@@ -1247,6 +1337,7 @@ async def handle_preset(query: CallbackQuery, data: dict, cb: str):
             'fontsize': 30, 'add_shadow': False,
             'double_layer': False, 'gradient_effect': False,
             'outline': False, 'gap': 'medium', 'position': 'center',
+            'underlay': False,
             'msg': "✅ *Header Style Applied!*\n\n• Style: HEADER\n• Color: BLACK\n• Opacity: 50%\n\n📂 *Send PDF or ZIP file now!*"
         },
         'double_layer': {
@@ -1255,7 +1346,19 @@ async def handle_preset(query: CallbackQuery, data: dict, cb: str):
             'double_layer': True, 'double_layer_color': 'black',
             'gradient_effect': False, 'outline': False,
             'gap': 'medium', 'position': 'center',
-            'msg': "✅ *Double Layer Pro Applied!*\n\n• Style: DIAGONAL\n• 3D Shadow: YES\n• Double Layer: YES\n• Second Layer: BLACK\n\n📂 *Send PDF or ZIP file now!*"
+            'underlay': False,
+            'msg': "✅ *Double Layer Pro Applied!*\n\n• Style: DIAGONAL\n• 3D Shadow: YES\n• Double Layer: YES\n\n📂 *Send PDF or ZIP file now!*"
+        },
+        # ============================================
+        # NEW PRESET: UNDERLAY PROFESSIONAL
+        # ============================================
+        'underlay_pro': {
+            'style': 'diagonal', 'color': 'grey', 'opacity': 0.15,
+            'fontsize': 52, 'rotation': 45, 'add_shadow': False,
+            'double_layer': False, 'gradient_effect': False,
+            'outline': False, 'gap': 'medium', 'position': 'center',
+            'underlay': True,  # BEHIND content
+            'msg': "✅ *Underlay Pro Applied!*\n\n• Style: DIAGONAL\n• Layer: BEHIND Content\n• Opacity: 15%\n• Perfect for professional docs!\n\n📂 *Send PDF or ZIP file now!*"
         },
         'custom': {
             'msg': None
@@ -1308,14 +1411,13 @@ async def handle_link_text(query: CallbackQuery, data: dict, cb: str):
 # BACKGROUND WORKER PROCESSOR
 # ============================================
 async def task_worker(worker_id: int):
-    """Pulls tasks from queue and processes them sequentially"""
+    """Pulls tasks from queue and processes them"""
     while True:
         task = await main_task_queue.get()
         task_id = task['id']
         status_msg = task['status_msg']
         
         try:
-            # Check if user cancelled while it was in queue
             if task_status.get(task_id) == "cancelled":
                 await status_msg.edit_text("❌ *Task Cancelled by User*", parse_mode=ParseMode.MARKDOWN)
                 continue
@@ -1332,14 +1434,13 @@ async def task_worker(worker_id: int):
             try: await status_msg.edit_text("❌ *Error processing file.*", parse_mode=ParseMode.MARKDOWN)
             except: pass
         finally:
-            # Cleanup and mark done
             if task_id in task_status: 
                 del task_status[task_id]
             main_task_queue.task_done()
             gc.collect()
 
 # ============================================
-# ACTUAL PROCESSING LOGIC (Called by Worker)
+# ACTUAL PROCESSING LOGIC
 # ============================================
 async def execute_pdf_processing(task: dict):
     message, status_msg = task['message'], task['status_msg']
@@ -1360,7 +1461,12 @@ async def execute_pdf_processing(task: dict):
         pages = get_pdf_page_count(input_path)
         progress = ProgressTracker(status_msg, user_id)
         
-        await status_msg.edit_text(f"🎨 *Applying Watermark...* ({pages} pages)", parse_mode=ParseMode.MARKDOWN)
+        # Show processing mode
+        mode_text = "🔻 UNDERLAY" if data.get('underlay') else "🔼 OVERLAY"
+        await status_msg.edit_text(
+            f"🎨 *Applying Watermark...* ({pages} pages)\n\nMode: {mode_text}", 
+            parse_mode=ParseMode.MARKDOWN
+        )
         
         loop = asyncio.get_event_loop()
         engine = WatermarkEngine(data)
@@ -1382,6 +1488,10 @@ async def execute_pdf_processing(task: dict):
             new_size = os.path.getsize(output_path)
             
             caption = f"✅ <b>WATERMARK APPLIED!</b>\n\n📄 <b>File:</b> <code>{html.escape(filename)}</code>\n📋 <b>Pages:</b> {pages}\n"
+            
+            # Show layer mode
+            if data.get('underlay'):
+                caption += f"🔻 <b>Layer:</b> UNDERLAY (Behind)\n"
             
             if data.get('type') == 'text':
                 txt = html.escape(data.get('content', '')[:40])
@@ -1475,7 +1585,7 @@ async def execute_zip_processing(task: dict):
         
     except Exception as e:
         logger.error(f"ZIP error for msg {message.id}: {e}")
-        await status_msg.edit_text(f"❌ ZIP Processing Error. Make sure the file isn't corrupted.", parse_mode=ParseMode.MARKDOWN)
+        await status_msg.edit_text(f"❌ ZIP Processing Error.", parse_mode=ParseMode.MARKDOWN)
         
     finally:
         if os.path.exists(zip_path): os.remove(zip_path)
@@ -1492,6 +1602,7 @@ if __name__ == '__main__':
     
     logger.info("🚀 Professional Watermark Bot Starting...")
     logger.info(f"📊 Config: Max Tasks={MAX_CONCURRENT_TASKS}, Memory Limit={MAX_MEMORY_MB}MB")
+    logger.info("🔥 NEW: Underlay Mode, Dynamic Variables, Multi-line Text")
     time.sleep(1)
     
     try:
@@ -1500,27 +1611,20 @@ if __name__ == '__main__':
     except Exception as e:
         logger.warning(f"Could not start keep_alive: {e}")
     
-    # Run the bot and its background tasks in a proper event loop context
     async def main_loop():
-        # Schedule the cleanup task safely
         asyncio.create_task(cleanup_task())
         
-        # 🌟 START BACKGROUND WORKERS (The Magic Fix)
         for i in range(MAX_CONCURRENT_TASKS):
             asyncio.create_task(task_worker(i))
         
-        # Start the bot client
         await app.start()
-        logger.info("✅ Bot has connected to Telegram successfully and is ready for BULK files!")
+        logger.info("✅ Bot connected! Ready for BULK files!")
         
-        # Keep the bot idle and listening for updates
         await idle()
-        
-        # Stop everything safely if needed
         await app.stop()
 
     try:
         app.run(main_loop())
     except Exception as e:  
-        logger.error(f"Fatal Error during run: {e}")
+        logger.error(f"Fatal Error: {e}")
         time.sleep(5)
