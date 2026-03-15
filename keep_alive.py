@@ -247,14 +247,14 @@ def stats():
     })
 
 def run():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 7860))
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
 
 def keep_alive():
     """Start the keep-alive server in a background thread"""
     t = threading.Thread(target=run, daemon=True)
     t.start()
-    print(f"✅ Keep-alive server started on port {os.environ.get('PORT', 8080)}")
+    print(f"✅ Keep-alive server started on port {os.environ.get('PORT', 7860)}")
 
 if __name__ == '__main__':
     keep_alive()
